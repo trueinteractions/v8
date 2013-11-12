@@ -256,7 +256,7 @@
           'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES',      # -fvisibility=hidden
           'GCC_THREADSAFE_STATICS': 'NO',           # -fno-threadsafe-statics
           'GCC_TREAT_WARNINGS_AS_ERRORS': 'YES',    # -Werror
-          'GCC_VERSION': 'com.apple.compilers.llvmgcc42',
+          # 'GCC_VERSION': 'com.apple.compilers.llvmgcc42',
           'GCC_WARN_ABOUT_MISSING_NEWLINE': 'YES',  # -Wnewline-eof
           'GCC_WARN_NON_VIRTUAL_DESTRUCTOR': 'YES', # -Wnon-virtual-dtor
           # MACOSX_DEPLOYMENT_TARGET maps to -mmacosx-version-min

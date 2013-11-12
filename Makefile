@@ -416,3 +416,6 @@ dependencies:
 	svn checkout --force \
 	    https://src.chromium.org/chrome/trunk/deps/third_party/icu46 \
 	    third_party/icu --revision 214189
+	svn checkout --force \
+	    https://github.com/atgreen/libffi \   
+	    third_party/libffi

@@ -9,6 +9,9 @@ deps = {
 
   "v8/third_party/icu":
     "https://src.chromium.org/chrome/trunk/deps/third_party/icu46@214189",
+
+  "v8/third_party/libffi":
+    "https://github.com/atgreen/libffi.git"
 }
 
 deps_os = {
