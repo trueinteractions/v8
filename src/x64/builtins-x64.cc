@@ -73,6 +73,24 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm,
 }
 
 
+static void CallRuntimePassFunction(MacroAssembler* masm,
+                                    Runtime::FunctionId function_id) {
+  FrameScope scope(masm, StackFrame::INTERNAL);
+  // Push a copy of the function onto the stack.
+  __ push(rdi);
+  // Push call kind information.
+  __ push(rcx);
+  // Function is also the parameter to the runtime call.
+  __ push(rdi);
+
+  __ CallRuntime(function_id, 1);
+  // Restore call kind information.
+  __ pop(rcx);
+  // Restore receiver.
+  __ pop(rdi);
+}
+
+
 static void GenerateTailCallToSharedCode(MacroAssembler* masm) {
   __ movq(kScratchRegister,
           FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
@@ -84,57 +102,27 @@ static void GenerateTailCallToSharedCode(MacroAssembler* masm) {
 
 
 void Builtins::Generate_InRecompileQueue(MacroAssembler* masm) {
+  // Checking whether the queued function is ready for install is optional,
+  // since we come across interrupts and stack checks elsewhere.  However,
+  // not checking may delay installing ready functions, and always checking
+  // would be quite expensive.  A good compromise is to first check against
+  // stack limit as a cue for an interrupt signal.
+  Label ok;
+  __ CompareRoot(rsp, Heap::kStackLimitRootIndex);
+  __ j(above_equal, &ok);
+
+  CallRuntimePassFunction(masm, Runtime::kTryInstallRecompiledCode);
+  // Tail call to returned code.
+  __ lea(rax, FieldOperand(rax, Code::kHeaderSize));
+  __ jmp(rax);
+
+  __ bind(&ok);
   GenerateTailCallToSharedCode(masm);
 }
 
 
-void Builtins::Generate_InstallRecompiledCode(MacroAssembler* masm) {
-  // Enter an internal frame.
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-
-    // Push a copy of the function onto the stack.
-    __ push(rdi);
-    // Push call kind information.
-    __ push(rcx);
-
-    __ push(rdi);  // Function is also the parameter to the runtime call.
-    __ CallRuntime(Runtime::kInstallRecompiledCode, 1);
-
-    // Restore call kind information.
-    __ pop(rcx);
-    // Restore function.
-    __ pop(rdi);
-
-    // Tear down internal frame.
-  }
-
-  // Do a tail-call of the compiled function.
-  __ lea(rax, FieldOperand(rax, Code::kHeaderSize));
-  __ jmp(rax);
-}
-
-
 void Builtins::Generate_ConcurrentRecompile(MacroAssembler* masm) {
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-
-    // Push a copy of the function onto the stack.
-    __ push(rdi);
-    // Push call kind information.
-    __ push(rcx);
-
-    __ push(rdi);  // Function is also the parameter to the runtime call.
-    __ CallRuntime(Runtime::kConcurrentRecompile, 1);
-
-    // Restore call kind information.
-    __ pop(rcx);
-    // Restore receiver.
-    __ pop(rdi);
-
-    // Tear down internal frame.
-  }
-
+  CallRuntimePassFunction(masm, Runtime::kConcurrentRecompile);
   GenerateTailCallToSharedCode(masm);
 }
 
@@ -170,7 +158,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
 #ifdef ENABLE_DEBUGGER_SUPPORT
       ExternalReference debug_step_in_fp =
           ExternalReference::debug_step_in_fp_address(masm->isolate());
-      __ movq(kScratchRegister, debug_step_in_fp);
+      __ Move(kScratchRegister, debug_step_in_fp);
       __ cmpq(Operand(kScratchRegister, 0), Immediate(0));
       __ j(not_equal, &rt_call);
 #endif
@@ -586,26 +574,7 @@ void Builtins::Generate_JSConstructEntryTrampoline(MacroAssembler* masm) {
 
 
 void Builtins::Generate_LazyCompile(MacroAssembler* masm) {
-  // Enter an internal frame.
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-
-    // Push a copy of the function onto the stack.
-    __ push(rdi);
-    // Push call kind information.
-    __ push(rcx);
-
-    __ push(rdi);  // Function is also the parameter to the runtime call.
-    __ CallRuntime(Runtime::kLazyCompile, 1);
-
-    // Restore call kind information.
-    __ pop(rcx);
-    // Restore receiver.
-    __ pop(rdi);
-
-    // Tear down internal frame.
-  }
-
+  CallRuntimePassFunction(masm, Runtime::kLazyCompile);
   // Do a tail-call of the compiled function.
   __ lea(rax, FieldOperand(rax, Code::kHeaderSize));
   __ jmp(rax);
@@ -613,26 +582,7 @@ void Builtins::Generate_LazyCompile(MacroAssembler* masm) {
 
 
 void Builtins::Generate_LazyRecompile(MacroAssembler* masm) {
-  // Enter an internal frame.
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-
-    // Push a copy of the function onto the stack.
-    __ push(rdi);
-    // Push call kind information.
-    __ push(rcx);
-
-    __ push(rdi);  // Function is also the parameter to the runtime call.
-    __ CallRuntime(Runtime::kLazyRecompile, 1);
-
-    // Restore call kind information.
-    __ pop(rcx);
-    // Restore function.
-    __ pop(rdi);
-
-    // Tear down internal frame.
-  }
-
+  CallRuntimePassFunction(masm, Runtime::kLazyRecompile);
   // Do a tail-call of the compiled function.
   __ lea(rax, FieldOperand(rax, Code::kHeaderSize));
   __ jmp(rax);
@@ -650,6 +600,7 @@ static void GenerateMakeCodeYoungAgainCommon(MacroAssembler* masm) {
   // the stub returns.
   __ subq(Operand(rsp, 0), Immediate(5));
   __ Pushad();
+  __ Move(arg_reg_2, ExternalReference::isolate_address(masm->isolate()));
   __ movq(arg_reg_1, Operand(rsp, kNumSafepointRegisters * kPointerSize));
   {  // NOLINT
     FrameScope scope(masm, StackFrame::MANUAL);
@@ -673,6 +624,42 @@ void Builtins::Generate_Make##C##CodeYoungAgainOddMarking(   \
 }
 CODE_AGE_LIST(DEFINE_CODE_AGE_BUILTIN_GENERATOR)
 #undef DEFINE_CODE_AGE_BUILTIN_GENERATOR
+
+
+void Builtins::Generate_MarkCodeAsExecutedOnce(MacroAssembler* masm) {
+  // For now, as in GenerateMakeCodeYoungAgainCommon, we are relying on the fact
+  // that make_code_young doesn't do any garbage collection which allows us to
+  // save/restore the registers without worrying about which of them contain
+  // pointers.
+  __ Pushad();
+  __ Move(arg_reg_2, ExternalReference::isolate_address(masm->isolate()));
+  __ movq(arg_reg_1, Operand(rsp, kNumSafepointRegisters * kPointerSize));
+  __ subq(arg_reg_1, Immediate(Assembler::kShortCallInstructionLength));
+  {  // NOLINT
+    FrameScope scope(masm, StackFrame::MANUAL);
+    __ PrepareCallCFunction(1);
+    __ CallCFunction(
+        ExternalReference::get_mark_code_as_executed_function(masm->isolate()),
+        1);
+  }
+  __ Popad();
+
+  // Perform prologue operations usually performed by the young code stub.
+  __ PopReturnAddressTo(kScratchRegister);
+  __ push(rbp);  // Caller's frame pointer.
+  __ movq(rbp, rsp);
+  __ push(rsi);  // Callee's context.
+  __ push(rdi);  // Callee's JS Function.
+  __ PushReturnAddressFrom(kScratchRegister);
+
+  // Jump to point after the code-age stub.
+  __ ret(0);
+}
+
+
+void Builtins::Generate_MarkCodeAsExecutedTwice(MacroAssembler* masm) {
+  GenerateMakeCodeYoungAgainCommon(masm);
+}
 
 
 void Builtins::Generate_NotifyStubFailure(MacroAssembler* masm) {
@@ -708,17 +695,17 @@ static void Generate_NotifyDeoptimizedHelper(MacroAssembler* masm,
   }
 
   // Get the full codegen state from the stack and untag it.
-  __ SmiToInteger32(r10, Operand(rsp, kPCOnStackSize));
+  __ SmiToInteger32(kScratchRegister, Operand(rsp, kPCOnStackSize));
 
   // Switch on the state.
   Label not_no_registers, not_tos_rax;
-  __ cmpq(r10, Immediate(FullCodeGenerator::NO_REGISTERS));
+  __ cmpq(kScratchRegister, Immediate(FullCodeGenerator::NO_REGISTERS));
   __ j(not_equal, &not_no_registers, Label::kNear);
   __ ret(1 * kPointerSize);  // Remove state.
 
   __ bind(&not_no_registers);
   __ movq(rax, Operand(rsp, kPCOnStackSize + kPointerSize));
-  __ cmpq(r10, Immediate(FullCodeGenerator::TOS_REG));
+  __ cmpq(kScratchRegister, Immediate(FullCodeGenerator::TOS_REG));
   __ j(not_equal, &not_tos_rax, Label::kNear);
   __ ret(2 * kPointerSize);  // Remove state, rax.
 
@@ -739,21 +726,6 @@ void Builtins::Generate_NotifySoftDeoptimized(MacroAssembler* masm) {
 
 void Builtins::Generate_NotifyLazyDeoptimized(MacroAssembler* masm) {
   Generate_NotifyDeoptimizedHelper(masm, Deoptimizer::LAZY);
-}
-
-
-void Builtins::Generate_NotifyOSR(MacroAssembler* masm) {
-  // For now, we are relying on the fact that Runtime::NotifyOSR
-  // doesn't do any garbage collection which allows us to save/restore
-  // the registers without worrying about which of them contain
-  // pointers. This seems a bit fragile.
-  __ Pushad();
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ CallRuntime(Runtime::kNotifyOSR, 0);
-  }
-  __ Popad();
-  __ ret(0);
 }
 
 
@@ -944,9 +916,9 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
     // rbp[16] : function arguments
     // rbp[24] : receiver
     // rbp[32] : function
-    static const int kArgumentsOffset = 2 * kPointerSize;
-    static const int kReceiverOffset = 3 * kPointerSize;
-    static const int kFunctionOffset = 4 * kPointerSize;
+    static const int kArgumentsOffset = kFPOnStackSize + kPCOnStackSize;
+    static const int kReceiverOffset = kArgumentsOffset + kPointerSize;
+    static const int kFunctionOffset = kReceiverOffset + kPointerSize;
 
     __ push(Operand(rbp, kFunctionOffset));
     __ push(Operand(rbp, kArgumentsOffset));
@@ -1190,13 +1162,11 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
 
   // Lookup the argument in the number to string cache.
   Label not_cached, argument_is_string;
-  NumberToStringStub::GenerateLookupNumberStringCache(
-      masm,
-      rax,  // Input.
-      rbx,  // Result.
-      rcx,  // Scratch 1.
-      rdx,  // Scratch 2.
-      &not_cached);
+  __ LookupNumberStringCache(rax,  // Input.
+                             rbx,  // Result.
+                             rcx,  // Scratch 1.
+                             rdx,  // Scratch 2.
+                             &not_cached);
   __ IncrementCounter(counters->string_ctor_cached_number(), 1);
   __ bind(&argument_is_string);
 
@@ -1408,32 +1378,63 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
 
 
 void Builtins::Generate_OnStackReplacement(MacroAssembler* masm) {
+  // Lookup the function in the JavaScript frame.
   __ movq(rax, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
-
-  // Pass the function to optimize as the argument to the on-stack
-  // replacement runtime function.
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
+    // Lookup and calculate pc offset.
+    __ movq(rdx, Operand(rbp, StandardFrameConstants::kCallerPCOffset));
+    __ movq(rbx, FieldOperand(rax, JSFunction::kSharedFunctionInfoOffset));
+    __ subq(rdx, Immediate(Code::kHeaderSize - kHeapObjectTag));
+    __ subq(rdx, FieldOperand(rbx, SharedFunctionInfo::kCodeOffset));
+    __ Integer32ToSmi(rdx, rdx);
+
+    // Pass both function and pc offset as arguments.
     __ push(rax);
-    __ CallRuntime(Runtime::kCompileForOnStackReplacement, 1);
+    __ push(rdx);
+    __ CallRuntime(Runtime::kCompileForOnStackReplacement, 2);
   }
 
-  // If the result was -1 it means that we couldn't optimize the
-  // function. Just return and continue in the unoptimized version.
   Label skip;
-  __ SmiCompare(rax, Smi::FromInt(-1));
+  // If the code object is null, just return to the unoptimized code.
+  __ cmpq(rax, Immediate(0));
   __ j(not_equal, &skip, Label::kNear);
   __ ret(0);
 
   __ bind(&skip);
-  // Untag the AST id and push it on the stack.
-  __ SmiToInteger32(rax, rax);
-  __ push(rax);
 
-  // Generate the code for doing the frame-to-frame translation using
-  // the deoptimizer infrastructure.
-  Deoptimizer::EntryGenerator generator(masm, Deoptimizer::OSR);
-  generator.Generate();
+  // Load deoptimization data from the code object.
+  __ movq(rbx, Operand(rax, Code::kDeoptimizationDataOffset - kHeapObjectTag));
+
+  // Load the OSR entrypoint offset from the deoptimization data.
+  __ SmiToInteger32(rbx, Operand(rbx, FixedArray::OffsetOfElementAt(
+      DeoptimizationInputData::kOsrPcOffsetIndex) - kHeapObjectTag));
+
+  // Compute the target address = code_obj + header_size + osr_offset
+  __ lea(rax, Operand(rax, rbx, times_1, Code::kHeaderSize - kHeapObjectTag));
+
+  // Overwrite the return address on the stack.
+  __ movq(Operand(rsp, 0), rax);
+
+  // And "return" to the OSR entry point of the function.
+  __ ret(0);
+}
+
+
+void Builtins::Generate_OsrAfterStackCheck(MacroAssembler* masm) {
+  // We check the stack limit as indicator that recompilation might be done.
+  Label ok;
+  __ CompareRoot(rsp, Heap::kStackLimitRootIndex);
+  __ j(above_equal, &ok);
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    __ CallRuntime(Runtime::kStackGuard, 0);
+  }
+  __ jmp(masm->isolate()->builtins()->OnStackReplacement(),
+         RelocInfo::CODE_TARGET);
+
+  __ bind(&ok);
+  __ ret(0);
 }
 
 

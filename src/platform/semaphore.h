@@ -28,9 +28,9 @@
 #ifndef V8_PLATFORM_SEMAPHORE_H_
 #define V8_PLATFORM_SEMAPHORE_H_
 
-#include "lazy-instance.h"
+#include "../lazy-instance.h"
 #if V8_OS_WIN
-#include "win32-headers.h"
+#include "../win32-headers.h"
 #endif
 
 #if V8_OS_MACOSX
@@ -80,10 +80,10 @@ class Semaphore V8_FINAL {
   typedef HANDLE NativeHandle;
 #endif
 
-  NativeHandle& native_handle() V8_WARN_UNUSED_RESULT {
+  NativeHandle& native_handle() {
     return native_handle_;
   }
-  const NativeHandle& native_handle() const V8_WARN_UNUSED_RESULT {
+  const NativeHandle& native_handle() const {
     return native_handle_;
   }
 

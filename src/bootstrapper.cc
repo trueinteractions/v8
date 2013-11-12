@@ -45,10 +45,6 @@
 #include "extensions/statistics-extension.h"
 #include "code-stubs.h"
 
-#if defined(V8_I18N_SUPPORT)
-#include "extensions/i18n/i18n-extension.h"
-#endif
-
 namespace v8 {
 namespace internal {
 
@@ -98,7 +94,7 @@ Handle<String> Bootstrapper::NativesSourceLookup(int index) {
 
 
 void Bootstrapper::Initialize(bool create_heap_objects) {
-  extensions_cache_.Initialize(create_heap_objects);
+  extensions_cache_.Initialize(isolate_, create_heap_objects);
 }
 
 
@@ -106,9 +102,6 @@ void Bootstrapper::InitializeOncePerProcess() {
   GCExtension::Register();
   ExternalizeStringExtension::Register();
   StatisticsExtension::Register();
-#if defined(V8_I18N_SUPPORT)
-  v8_i18n::Extension::Register();
-#endif
 }
 
 
@@ -147,7 +140,7 @@ void Bootstrapper::TearDown() {
     delete_these_arrays_on_tear_down_ = NULL;
   }
 
-  extensions_cache_.Initialize(false);  // Yes, symmetrical
+  extensions_cache_.Initialize(isolate_, false);  // Yes, symmetrical
 }
 
 
@@ -831,7 +824,7 @@ void Genesis::HookUpInnerGlobal(Handle<GlobalObject> inner_global) {
 // work in the snapshot case is done in HookUpInnerGlobal.
 void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
                                Handle<JSFunction> empty_function) {
-  // --- G l o b a l   C o n t e x t ---
+  // --- N a t i v e   C o n t e x t ---
   // Use the empty function as closure (no scope info).
   native_context()->set_closure(*empty_function);
   native_context()->set_previous(NULL);
@@ -1050,7 +1043,7 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
   }
 
   {  // -- J S O N
-    Handle<String> name = factory->NewStringFromAscii(CStrVector("JSON"));
+    Handle<String> name = factory->InternalizeUtf8String("JSON");
     Handle<JSFunction> cons = factory->NewFunction(name,
                                                    factory->the_hole_value());
     JSFunction::SetInstancePrototype(cons,
@@ -1316,13 +1309,9 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
   Handle<FixedArray> embedder_data = factory->NewFixedArray(2);
   native_context()->set_embedder_data(*embedder_data);
 
-  {
-    // Initialize the random seed slot.
-    Handle<ByteArray> zeroed_byte_array(
-        factory->NewByteArray(kRandomStateSize));
-    native_context()->set_random_seed(*zeroed_byte_array);
-    memset(zeroed_byte_array->GetDataStartAddress(), 0, kRandomStateSize);
-  }
+  // Allocate the random seed slot.
+  Handle<ByteArray> random_seed = factory->NewByteArray(kRandomStateSize);
+  native_context()->set_random_seed(*random_seed);
 }
 
 
@@ -2078,6 +2067,11 @@ bool Genesis::InstallExperimentalNatives() {
                "native harmony-array.js") == 0) {
       if (!CompileExperimentalBuiltin(isolate(), i)) return false;
     }
+    if (FLAG_harmony_maths &&
+        strcmp(ExperimentalNatives::GetScriptName(i).start(),
+               "native harmony-math.js") == 0) {
+      if (!CompileExperimentalBuiltin(isolate(), i)) return false;
+    }
   }
 
   InstallExperimentalNativeFunctions();
@@ -2294,12 +2288,6 @@ bool Genesis::InstallExtensions(Handle<Context> native_context,
   if (FLAG_track_gc_object_stats) {
     InstallExtension(isolate, "v8/statistics", &extension_states);
   }
-
-#if defined(V8_I18N_SUPPORT)
-  if (FLAG_enable_i18n) {
-    InstallExtension(isolate, "v8/i18n", &extension_states);
-  }
-#endif
 
   if (extensions == NULL) return true;
   // Install required extensions
@@ -2646,6 +2634,14 @@ Genesis::Genesis(Isolate* isolate,
   // Initialize experimental globals and install experimental natives.
   InitializeExperimentalGlobal();
   if (!InstallExperimentalNatives()) return;
+
+  // Initially seed the per-context random number generator
+  // using the per-isolate random number generator.
+  uint32_t* state = reinterpret_cast<uint32_t*>(
+      native_context()->random_seed()->GetDataStartAddress());
+  do {
+    isolate->random_number_generator()->NextBytes(state, kRandomStateSize);
+  } while (state[0] == 0 || state[1] == 0);
 
   result_ = native_context();
 }

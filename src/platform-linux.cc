@@ -38,11 +38,6 @@
 #include <sys/types.h>
 #include <stdlib.h>
 
-#if defined(__GLIBC__) && !defined(__UCLIBC__)
-#include <execinfo.h>
-#include <cxxabi.h>
-#endif
-
 // Ubuntu Dapper requires memory pages to be marked as
 // executable. Otherwise, OS raises an exception when executing code
 // in that page.
@@ -66,7 +61,6 @@
 
 #include "v8.h"
 
-#include "platform-posix.h"
 #include "platform.h"
 #include "v8threads.h"
 #include "vm-state-inl.h"
@@ -154,14 +148,6 @@ void* OS::Allocate(const size_t requested,
 }
 
 
-void OS::DumpBacktrace() {
-  // backtrace is a glibc extension.
-#if defined(__GLIBC__) && !defined(__UCLIBC__)
-  POSIXBacktraceHelper<backtrace, backtrace_symbols>::DumpBacktrace();
-#endif
-}
-
-
 class PosixMemoryMappedFile : public OS::MemoryMappedFile {
  public:
   PosixMemoryMappedFile(FILE* file, void* memory, int size)
@@ -220,7 +206,7 @@ PosixMemoryMappedFile::~PosixMemoryMappedFile() {
 }
 
 
-void OS::LogSharedLibraryAddresses() {
+void OS::LogSharedLibraryAddresses(Isolate* isolate) {
   // This function assumes that the layout of the file is as follows:
   // hex_start_addr-hex_end_addr rwxp <unused data> [binary_file_name]
   // If we encounter an unexpected situation we abort scanning further entries.
@@ -231,7 +217,6 @@ void OS::LogSharedLibraryAddresses() {
   const int kLibNameLen = FILENAME_MAX + 1;
   char* lib_name = reinterpret_cast<char*>(malloc(kLibNameLen));
 
-  i::Isolate* isolate = ISOLATE;
   // This loop will terminate once the scanning hits an EOF.
   while (true) {
     uintptr_t start, end;
@@ -311,16 +296,6 @@ void OS::SignalCodeMovingGC() {
   ASSERT(addr != MAP_FAILED);
   OS::Free(addr, size);
   fclose(f);
-}
-
-
-int OS::StackWalk(Vector<OS::StackFrame> frames) {
-  // backtrace is a glibc extension.
-#if defined(__GLIBC__) && !defined(__UCLIBC__)
-  return POSIXBacktraceHelper<backtrace, backtrace_symbols>::StackWalk(frames);
-#else
-  return 0;
-#endif
 }
 
 
@@ -465,13 +440,5 @@ bool VirtualMemory::ReleaseRegion(void* base, size_t size) {
 bool VirtualMemory::HasLazyCommits() {
   return true;
 }
-
-
-void OS::SetUp() {
-  // Seed the random number generator. We preserve microsecond resolution.
-  uint64_t seed = static_cast<uint64_t>(TimeCurrentMillis()) ^ (getpid() << 16);
-  srandom(static_cast<unsigned int>(seed));
-}
-
 
 } }  // namespace v8::internal

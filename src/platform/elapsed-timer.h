@@ -28,8 +28,8 @@
 #ifndef V8_PLATFORM_ELAPSED_TIMER_H_
 #define V8_PLATFORM_ELAPSED_TIMER_H_
 
-#include "checks.h"
-#include "platform/time.h"
+#include "../checks.h"
+#include "time.h"
 
 namespace v8 {
 namespace internal {
@@ -87,7 +87,7 @@ class ElapsedTimer V8_FINAL BASE_EMBEDDED {
 
   // Returns the time elapsed since the previous start. This method may only
   // be called on a previously started timer.
-  MUST_USE_RESULT TimeDelta Elapsed() const {
+  TimeDelta Elapsed() const {
     ASSERT(IsStarted());
     TimeDelta elapsed = Now() - start_ticks_;
     ASSERT(elapsed.InMicroseconds() >= 0);
@@ -97,14 +97,14 @@ class ElapsedTimer V8_FINAL BASE_EMBEDDED {
   // Returns |true| if the specified |time_delta| has elapsed since the
   // previous start, or |false| if not. This method may only be called on
   // a previously started timer.
-  MUST_USE_RESULT bool HasExpired(TimeDelta time_delta) const {
+  bool HasExpired(TimeDelta time_delta) const {
     ASSERT(IsStarted());
     return Elapsed() >= time_delta;
   }
 
  private:
-  MUST_USE_RESULT V8_INLINE(static TimeTicks Now()) {
-    TimeTicks now = TimeTicks::HighResNow();
+  static V8_INLINE TimeTicks Now() {
+    TimeTicks now = TimeTicks::HighResolutionNow();
     ASSERT(!now.IsNull());
     return now;
   }

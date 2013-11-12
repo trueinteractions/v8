@@ -226,12 +226,22 @@ const int MB = KB * KB;
 const int GB = KB * KB * KB;
 const int kMaxInt = 0x7FFFFFFF;
 const int kMinInt = -kMaxInt - 1;
+const int kMaxInt8 = (1 << 7) - 1;
+const int kMinInt8 = -(1 << 7);
+const int kMaxUInt8 = (1 << 8) - 1;
+const int kMinUInt8 = 0;
+const int kMaxInt16 = (1 << 15) - 1;
+const int kMinInt16 = -(1 << 15);
+const int kMaxUInt16 = (1 << 16) - 1;
+const int kMinUInt16 = 0;
 
 const uint32_t kMaxUInt32 = 0xFFFFFFFFu;
 
 const int kCharSize      = sizeof(char);      // NOLINT
 const int kShortSize     = sizeof(short);     // NOLINT
 const int kIntSize       = sizeof(int);       // NOLINT
+const int kInt32Size     = sizeof(int32_t);   // NOLINT
+const int kInt64Size     = sizeof(int64_t);   // NOLINT
 const int kDoubleSize    = sizeof(double);    // NOLINT
 const int kIntptrSize    = sizeof(intptr_t);  // NOLINT
 const int kPointerSize   = sizeof(void*);     // NOLINT
@@ -248,10 +258,12 @@ const int kRandomStateSize = 2 * kIntSize;
 const int kPointerSizeLog2 = 3;
 const intptr_t kIntptrSignBit = V8_INT64_C(0x8000000000000000);
 const uintptr_t kUintptrAllBitsSet = V8_UINT64_C(0xFFFFFFFFFFFFFFFF);
+const bool kIs64BitArch = true;
 #else
 const int kPointerSizeLog2 = 2;
 const intptr_t kIntptrSignBit = 0x80000000;
 const uintptr_t kUintptrAllBitsSet = 0xFFFFFFFFu;
+const bool kIs64BitArch = false;
 #endif
 
 const int kBitsPerByte = 8;
@@ -342,9 +354,9 @@ F FUNCTION_CAST(Address addr) {
   DISALLOW_COPY_AND_ASSIGN(TypeName)
 
 
-// Newly written code should use V8_INLINE() and V8_NOINLINE() directly.
-#define INLINE(declarator)    V8_INLINE(declarator)
-#define NO_INLINE(declarator) V8_NOINLINE(declarator)
+// Newly written code should use V8_INLINE and V8_NOINLINE directly.
+#define INLINE(declarator)    V8_INLINE declarator
+#define NO_INLINE(declarator) V8_NOINLINE declarator
 
 
 // Newly written code should use V8_WARN_UNUSED_RESULT.
@@ -354,7 +366,7 @@ F FUNCTION_CAST(Address addr) {
 // Define DISABLE_ASAN macros.
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
-#define DISABLE_ASAN __attribute__((no_address_safety_analysis))
+#define DISABLE_ASAN __attribute__((no_sanitize_address))
 #endif
 #endif
 
@@ -390,18 +402,6 @@ enum LanguageMode {
   CLASSIC_MODE,
   STRICT_MODE,
   EXTENDED_MODE
-};
-
-
-// A simple Maybe type, that can be passed by value.
-template<class T>
-struct Maybe {
-  Maybe() : has_value(false) {}
-  explicit Maybe(T t) : has_value(true), value(t) {}
-  Maybe(bool has, T t) : has_value(has), value(t) {}
-
-  bool has_value;
-  T value;
 };
 
 

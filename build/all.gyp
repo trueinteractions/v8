@@ -8,7 +8,6 @@
       'target_name': 'All',
       'type': 'none',
       'dependencies': [
-        '../preparser/preparser.gyp:*',
         '../samples/samples.gyp:*',
 	'../tint/tint.gyp:*',
         '../src/d8.gyp:d8',

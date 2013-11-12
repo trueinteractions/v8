@@ -609,6 +609,21 @@ static void KeyedStoreGenerateGenericHelper(
     __ CompareRoot(rdi, Heap::kFixedArrayMapRootIndex);
     __ j(not_equal, fast_double);
   }
+
+  // HOLECHECK: guards "A[i] = V"
+  // We have to go to the runtime if the current value is the hole because
+  // there may be a callback on the element
+  Label holecheck_passed1;
+  __ movq(kScratchRegister, FieldOperand(rbx,
+                                         rcx,
+                                         times_pointer_size,
+                                         FixedArray::kHeaderSize));
+  __ CompareRoot(kScratchRegister, Heap::kTheHoleValueRootIndex);
+  __ j(not_equal, &holecheck_passed1);
+  __ JumpIfDictionaryInPrototypeChain(rdx, rdi, kScratchRegister, slow);
+
+  __ bind(&holecheck_passed1);
+
   // Smi stores don't require further checks.
   Label non_smi_value;
   __ JumpIfNotSmi(rax, &non_smi_value);
@@ -648,6 +663,15 @@ static void KeyedStoreGenerateGenericHelper(
     __ CompareRoot(rdi, Heap::kFixedDoubleArrayMapRootIndex);
     __ j(not_equal, slow);
   }
+
+  // HOLECHECK: guards "A[i] double hole?"
+  // We have to see if the double version of the hole is present. If so
+  // go to the runtime.
+  uint32_t offset = FixedDoubleArray::kHeaderSize + sizeof(kHoleNanLower32);
+  __ cmpl(FieldOperand(rbx, rcx, times_8, offset), Immediate(kHoleNanUpper32));
+  __ j(not_equal, &fast_double_without_map_check);
+  __ JumpIfDictionaryInPrototypeChain(rdx, rdi, kScratchRegister, slow);
+
   __ bind(&fast_double_without_map_check);
   __ StoreNumberToDoubleElements(rax, rbx, rcx, xmm0,
                                  &transition_double_elements);
@@ -822,8 +846,8 @@ void CallICBase::GenerateMonomorphicCacheProbe(MacroAssembler* masm,
                                          extra_state,
                                          Code::NORMAL,
                                          argc);
-  Isolate::Current()->stub_cache()->GenerateProbe(masm, flags, rdx, rcx, rbx,
-                                                  rax);
+  masm->isolate()->stub_cache()->GenerateProbe(
+      masm, flags, rdx, rcx, rbx, rax);
 
   // If the stub cache probing failed, the receiver might be a value.
   // For value objects, we use the map of the prototype objects for
@@ -859,8 +883,8 @@ void CallICBase::GenerateMonomorphicCacheProbe(MacroAssembler* masm,
 
   // Probe the stub cache for the value object.
   __ bind(&probe);
-  Isolate::Current()->stub_cache()->GenerateProbe(masm, flags, rdx, rcx, rbx,
-                                                  no_reg);
+  masm->isolate()->stub_cache()->GenerateProbe(
+      masm, flags, rdx, rcx, rbx, no_reg);
 
   __ bind(&miss);
 }
@@ -1330,9 +1354,9 @@ void LoadIC::GenerateMegamorphic(MacroAssembler* masm) {
 
   // Probe the stub cache.
   Code::Flags flags = Code::ComputeFlags(
-      Code::STUB, MONOMORPHIC, Code::kNoExtraICState,
+      Code::HANDLER, MONOMORPHIC, Code::kNoExtraICState,
       Code::NORMAL, Code::LOAD_IC);
-  Isolate::Current()->stub_cache()->GenerateProbe(
+  masm->isolate()->stub_cache()->GenerateProbe(
       masm, flags, rax, rcx, rbx, rdx);
 
   GenerateMiss(masm);
@@ -1451,10 +1475,10 @@ void StoreIC::GenerateMegamorphic(MacroAssembler* masm,
 
   // Get the receiver from the stack and probe the stub cache.
   Code::Flags flags = Code::ComputeFlags(
-      Code::STUB, MONOMORPHIC, strict_mode,
+      Code::HANDLER, MONOMORPHIC, strict_mode,
       Code::NORMAL, Code::STORE_IC);
-  Isolate::Current()->stub_cache()->GenerateProbe(masm, flags, rdx, rcx, rbx,
-                                                  no_reg);
+  masm->isolate()->stub_cache()->GenerateProbe(
+      masm, flags, rdx, rcx, rbx, no_reg);
 
   // Cache miss: Jump to runtime.
   GenerateMiss(masm);

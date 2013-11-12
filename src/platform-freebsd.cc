@@ -43,7 +43,6 @@
 #include <sys/fcntl.h>  // open
 #include <unistd.h>     // getpagesize
 // If you don't have execinfo.h then you need devel/libexecinfo from ports.
-#include <execinfo.h>   // backtrace, backtrace_symbols
 #include <strings.h>    // index
 #include <errno.h>
 #include <stdarg.h>
@@ -54,7 +53,6 @@
 #include "v8.h"
 #include "v8threads.h"
 
-#include "platform-posix.h"
 #include "platform.h"
 #include "vm-state-inl.h"
 
@@ -89,16 +87,11 @@ void* OS::Allocate(const size_t requested,
   void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
 
   if (mbase == MAP_FAILED) {
-    LOG(ISOLATE, StringEvent("OS::Allocate", "mmap failed"));
+    LOG(Isolate::Current(), StringEvent("OS::Allocate", "mmap failed"));
     return NULL;
   }
   *allocated = msize;
   return mbase;
-}
-
-
-void OS::DumpBacktrace() {
-  POSIXBacktraceHelper<backtrace, backtrace_symbols>::DumpBacktrace();
 }
 
 
@@ -155,7 +148,7 @@ static unsigned StringToLong(char* buffer) {
 }
 
 
-void OS::LogSharedLibraryAddresses() {
+void OS::LogSharedLibraryAddresses(Isolate* isolate) {
   static const int MAP_LENGTH = 1024;
   int fd = open("/proc/self/maps", O_RDONLY);
   if (fd < 0) return;
@@ -189,7 +182,7 @@ void OS::LogSharedLibraryAddresses() {
     // There may be no filename in this line.  Skip to next.
     if (start_of_path == NULL) continue;
     buffer[bytes_read] = 0;
-    LOG(i::Isolate::Current(), SharedLibraryEvent(start_of_path, start, end));
+    LOG(isolate SharedLibraryEvent(start_of_path, start, end));
   }
   close(fd);
 }
@@ -198,10 +191,6 @@ void OS::LogSharedLibraryAddresses() {
 void OS::SignalCodeMovingGC() {
 }
 
-
-int OS::StackWalk(Vector<OS::StackFrame> frames) {
-  return POSIXBacktraceHelper<backtrace, backtrace_symbols>::StackWalk(frames);
-}
 
 
 // Constants used for mmap.
@@ -339,17 +328,5 @@ bool VirtualMemory::HasLazyCommits() {
   // TODO(alph): implement for the platform.
   return false;
 }
-
-
-void OS::SetUp() {
-  // Seed the random number generator.
-  // Convert the current time to a 64-bit integer first, before converting it
-  // to an unsigned. Going directly can cause an overflow and the seed to be
-  // set to all ones. The seed will be identical for different instances that
-  // call this setup code within the same millisecond.
-  uint64_t seed = static_cast<uint64_t>(TimeCurrentMillis());
-  srandom(static_cast<unsigned int>(seed));
-}
-
 
 } }  // namespace v8::internal

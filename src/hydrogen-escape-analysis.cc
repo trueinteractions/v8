@@ -31,7 +31,7 @@ namespace v8 {
 namespace internal {
 
 
-bool HEscapeAnalysisPhase::HasNoEscapingUses(HValue* value) {
+bool HEscapeAnalysisPhase::HasNoEscapingUses(HValue* value, int size) {
   for (HUseIterator it(value->uses()); !it.Done(); it.Advance()) {
     HValue* use = it.value();
     if (use->HasEscapingOperandAt(it.index())) {
@@ -41,7 +41,15 @@ bool HEscapeAnalysisPhase::HasNoEscapingUses(HValue* value) {
       }
       return false;
     }
-    if (use->RedefinedOperandIndex() == it.index() && !HasNoEscapingUses(use)) {
+    if (use->HasOutOfBoundsAccess(size)) {
+      if (FLAG_trace_escape_analysis) {
+        PrintF("#%d (%s) out of bounds at #%d (%s) @%d\n", value->id(),
+               value->Mnemonic(), use->id(), use->Mnemonic(), it.index());
+      }
+      return false;
+    }
+    int redefined_index = use->RedefinedOperandIndex();
+    if (redefined_index == it.index() && !HasNoEscapingUses(use, size)) {
       if (FLAG_trace_escape_analysis) {
         PrintF("#%d (%s) escapes redefinition #%d (%s) @%d\n", value->id(),
                value->Mnemonic(), use->id(), use->Mnemonic(), it.index());
@@ -59,7 +67,11 @@ void HEscapeAnalysisPhase::CollectCapturedValues() {
     HBasicBlock* block = graph()->blocks()->at(i);
     for (HInstructionIterator it(block); !it.Done(); it.Advance()) {
       HInstruction* instr = it.Current();
-      if (instr->IsAllocate() && HasNoEscapingUses(instr)) {
+      if (!instr->IsAllocate()) continue;
+      HAllocate* allocate = HAllocate::cast(instr);
+      if (!allocate->size()->IsInteger32Constant()) continue;
+      int size_in_bytes = allocate->size()->GetInteger32Constant();
+      if (HasNoEscapingUses(instr, size_in_bytes)) {
         if (FLAG_trace_escape_analysis) {
           PrintF("#%d (%s) is being captured\n", instr->id(),
                  instr->Mnemonic());
@@ -142,9 +154,8 @@ HValue* HEscapeAnalysisPhase::NewMapCheckAndInsert(HCapturedObject* state,
   HValue* value = state->map_value();
   // TODO(mstarzinger): This will narrow a map check against a set of maps
   // down to the first element in the set. Revisit and fix this.
-  Handle<Map> map_object = mapcheck->map_set()->first();
-  UniqueValueId map_id = mapcheck->map_unique_ids()->first();
-  HCheckValue* check = HCheckValue::New(zone, NULL, value, map_object, map_id);
+  HCheckValue* check = HCheckValue::New(
+      zone, NULL, value, mapcheck->first_map(), false);
   check->InsertBefore(mapcheck);
   return check;
 }
@@ -290,13 +301,12 @@ void HEscapeAnalysisPhase::PerformScalarReplacement() {
     HAllocate* allocate = HAllocate::cast(captured_.at(i));
 
     // Compute number of scalar values and start with clean slate.
-    if (!allocate->size()->IsInteger32Constant()) continue;
     int size_in_bytes = allocate->size()->GetInteger32Constant();
     number_of_values_ = size_in_bytes / kPointerSize;
     number_of_objects_++;
     block_states_.Clear();
 
-    // Perform actual analysis steps.
+    // Perform actual analysis step.
     AnalyzeDataFlow(allocate);
 
     cumulative_values_ += number_of_values_;
@@ -310,8 +320,13 @@ void HEscapeAnalysisPhase::Run() {
   // TODO(mstarzinger): We disable escape analysis with OSR for now, because
   // spill slots might be uninitialized. Needs investigation.
   if (graph()->has_osr()) return;
-  CollectCapturedValues();
-  PerformScalarReplacement();
+  int max_fixpoint_iteration_count = FLAG_escape_analysis_iterations;
+  for (int i = 0; i < max_fixpoint_iteration_count; i++) {
+    CollectCapturedValues();
+    if (captured_.is_empty()) break;
+    PerformScalarReplacement();
+    captured_.Clear();
+  }
 }
 
 

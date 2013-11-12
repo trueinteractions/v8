@@ -363,26 +363,25 @@ int ScopeInfo::FunctionContextSlotIndex(String* name, VariableMode* mode) {
 }
 
 
-bool ScopeInfo::CopyContextLocalsToScopeObject(
-    Isolate* isolate,
-    Handle<Context> context,
-    Handle<JSObject> scope_object) {
-  int local_count = ContextLocalCount();
+bool ScopeInfo::CopyContextLocalsToScopeObject(Handle<ScopeInfo> scope_info,
+                                               Handle<Context> context,
+                                               Handle<JSObject> scope_object) {
+  Isolate* isolate = scope_info->GetIsolate();
+  int local_count = scope_info->ContextLocalCount();
   if (local_count == 0) return true;
   // Fill all context locals to the context extension.
-  int start = ContextLocalNameEntriesIndex();
+  int start = scope_info->ContextLocalNameEntriesIndex();
   int end = start + local_count;
   for (int i = start; i < end; ++i) {
     int context_index = Context::MIN_CONTEXT_SLOTS + i - start;
-    RETURN_IF_EMPTY_HANDLE_VALUE(
+    Handle<Object> result = Runtime::SetObjectProperty(
         isolate,
-        SetProperty(isolate,
-                    scope_object,
-                    Handle<String>(String::cast(get(i))),
-                    Handle<Object>(context->get(context_index), isolate),
-                    ::NONE,
-                    kNonStrictMode),
-        false);
+        scope_object,
+        Handle<String>(String::cast(scope_info->get(i))),
+        Handle<Object>(context->get(context_index), isolate),
+        ::NONE,
+        kNonStrictMode);
+    RETURN_IF_EMPTY_HANDLE_VALUE(isolate, result, false);
   }
   return true;
 }
@@ -445,7 +444,8 @@ void ContextSlotCache::Update(Object* data,
                               int slot_index) {
   String* internalized_name;
   ASSERT(slot_index > kNotFound);
-  if (HEAP->InternalizeStringIfExists(name, &internalized_name)) {
+  if (name->GetIsolate()->heap()->InternalizeStringIfExists(
+          name, &internalized_name)) {
     int index = Hash(data, internalized_name);
     Key& key = keys_[index];
     key.data = data;
@@ -472,7 +472,8 @@ void ContextSlotCache::ValidateEntry(Object* data,
                                      InitializationFlag init_flag,
                                      int slot_index) {
   String* internalized_name;
-  if (HEAP->InternalizeStringIfExists(name, &internalized_name)) {
+  if (name->GetIsolate()->heap()->InternalizeStringIfExists(
+          name, &internalized_name)) {
     int index = Hash(data, name);
     Key& key = keys_[index];
     ASSERT(key.data == data);

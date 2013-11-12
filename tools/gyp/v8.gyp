@@ -28,6 +28,7 @@
 {
   'variables': {
     'v8_code': 1,
+    'v8_random_seed%': 314159265,
   },
   'includes': ['../../build/toolchain.gypi', '../../build/features.gypi'],
   'targets': [
@@ -58,6 +59,7 @@
         ['component=="shared_library"', {
           'type': '<(component)',
           'sources': [
+            '../../src/defaults.cc',
             # Note: on non-Windows we still build this file so that gyp
             # has some sources to link into the component.
             '../../src/v8dll-main.cc',
@@ -129,11 +131,6 @@
             ],
           },
         }],
-        ['v8_enable_i18n_support==1', {
-          'sources': [
-            '<(SHARED_INTERMEDIATE_DIR)/i18n-libraries.cc',
-          ],
-        }],
       ],
       'dependencies': [
         'v8_base.<(v8_target_arch)',
@@ -159,6 +156,11 @@
             'mksnapshot_flags': [
               '--log-snapshot-positions',
               '--logfile', '<(INTERMEDIATE_DIR)/snapshot.log',
+            ],
+            'conditions': [
+              ['v8_random_seed!=0', {
+                'mksnapshot_flags': ['--random-seed', '<(v8_random_seed)'],
+              }],
             ],
           },
           'action': [
@@ -197,11 +199,6 @@
             'V8_SHARED',
           ],
         }],
-        ['v8_enable_i18n_support==1', {
-          'sources': [
-            '<(SHARED_INTERMEDIATE_DIR)/i18n-libraries.cc',
-          ],
-        }],
       ]
     },
     {
@@ -218,6 +215,8 @@
         '../../src/accessors.h',
         '../../src/allocation.cc',
         '../../src/allocation.h',
+        '../../src/allocation-site-scopes.cc',
+        '../../src/allocation-site-scopes.h',
         '../../src/api.cc',
         '../../src/api.h',
         '../../src/apiutils.h',
@@ -336,22 +335,24 @@
         '../../src/heap-snapshot-generator.h',
         '../../src/heap.cc',
         '../../src/heap.h',
+        '../../src/hydrogen-alias-analysis.h',
         '../../src/hydrogen-bce.cc',
         '../../src/hydrogen-bce.h',
         '../../src/hydrogen-bch.cc',
         '../../src/hydrogen-bch.h',
         '../../src/hydrogen-canonicalize.cc',
         '../../src/hydrogen-canonicalize.h',
+        '../../src/hydrogen-check-elimination.cc',
+        '../../src/hydrogen-check-elimination.h',
         '../../src/hydrogen-dce.cc',
         '../../src/hydrogen-dce.h',
         '../../src/hydrogen-dehoist.cc',
         '../../src/hydrogen-dehoist.h',
-        '../../src/hydrogen-deoptimizing-mark.cc',
-        '../../src/hydrogen-deoptimizing-mark.h',
         '../../src/hydrogen-environment-liveness.cc',
         '../../src/hydrogen-environment-liveness.h',
         '../../src/hydrogen-escape-analysis.cc',
         '../../src/hydrogen-escape-analysis.h',
+        '../../src/hydrogen-flow-engine.h',
         '../../src/hydrogen-instructions.cc',
         '../../src/hydrogen-instructions.h',
         '../../src/hydrogen.cc',
@@ -362,10 +363,16 @@
         '../../src/hydrogen-infer-representation.h',
         '../../src/hydrogen-infer-types.cc',
         '../../src/hydrogen-infer-types.h',
+        '../../src/hydrogen-load-elimination.cc',
+        '../../src/hydrogen-load-elimination.h',
         '../../src/hydrogen-mark-deoptimize.cc',
         '../../src/hydrogen-mark-deoptimize.h',
+        '../../src/hydrogen-mark-unreachable.cc',
+        '../../src/hydrogen-mark-unreachable.h',
         '../../src/hydrogen-minus-zero.cc',
         '../../src/hydrogen-minus-zero.h',
+        '../../src/hydrogen-osr.cc',
+        '../../src/hydrogen-osr.h',
         '../../src/hydrogen-range-analysis.cc',
         '../../src/hydrogen-range-analysis.h',
         '../../src/hydrogen-redundant-phi.cc',
@@ -378,8 +385,6 @@
         '../../src/hydrogen-sce.h',
         '../../src/hydrogen-uint32-analysis.cc',
         '../../src/hydrogen-uint32-analysis.h',
-        '../../src/hydrogen-osr.cc',
-        '../../src/hydrogen-osr.h',
         '../../src/i18n.cc',
         '../../src/i18n.h',
         '../../src/icu_util.cc',
@@ -406,6 +411,8 @@
         '../../src/lithium-allocator-inl.h',
         '../../src/lithium-allocator.cc',
         '../../src/lithium-allocator.h',
+        '../../src/lithium-codegen.cc',
+        '../../src/lithium-codegen.h',
         '../../src/lithium.cc',
         '../../src/lithium.h',
         '../../src/liveedit.cc',
@@ -418,8 +425,6 @@
         '../../src/macro-assembler.h',
         '../../src/mark-compact.cc',
         '../../src/mark-compact.h',
-        '../../src/marking-thread.h',
-        '../../src/marking-thread.cc',
         '../../src/messages.cc',
         '../../src/messages.h',
         '../../src/natives.h',
@@ -439,7 +444,6 @@
         '../../src/platform/elapsed-timer.h',
         '../../src/platform/time.cc',
         '../../src/platform/time.h',
-        '../../src/platform-posix.h',
         '../../src/platform.h',
         '../../src/platform/condition-variable.cc',
         '../../src/platform/condition-variable.h',
@@ -527,10 +531,13 @@
         '../../src/unicode-inl.h',
         '../../src/unicode.cc',
         '../../src/unicode.h',
+        '../../src/unique.h',
         '../../src/uri.h',
         '../../src/utils-inl.h',
         '../../src/utils.cc',
         '../../src/utils.h',
+        '../../src/utils/random-number-generator.cc',
+        '../../src/utils/random-number-generator.h',
         '../../src/v8-counters.cc',
         '../../src/v8-counters.h',
         '../../src/v8.cc',
@@ -810,6 +817,9 @@
           ]},
         ],
         ['OS=="win"', {
+          'defines': [
+            '_CRT_RAND_S'  # for rand_s()
+          ],
           'variables': {
             'gyp_generators': '<!(echo $GYP_GENERATORS)',
           },
@@ -853,6 +863,10 @@
             'BUILDING_V8_SHARED',
             'V8_SHARED',
           ],
+        }, {
+          'sources': [
+            '../../src/defaults.cc',
+          ],
         }],
         ['v8_postmortem_support=="true"', {
           'sources': [
@@ -860,13 +874,9 @@
           ]
         }],
         ['v8_enable_i18n_support==1', {
-          'sources': [
-            '../../src/extensions/i18n/i18n-extension.cc',
-            '../../src/extensions/i18n/i18n-extension.h',
-          ],
           'dependencies': [
-            '<(DEPTH)/third_party/icu/icu.gyp:icui18n',
-            '<(DEPTH)/third_party/icu/icu.gyp:icuuc',
+            '<(icu_gyp_path):icui18n',
+            '<(icu_gyp_path):icuuc',
           ]
         }, {  # v8_enable_i18n_support==0
           'sources!': [
@@ -876,7 +886,7 @@
         }],
         ['OS=="win" and v8_enable_i18n_support==1', {
           'dependencies': [
-            '<(DEPTH)/third_party/icu/icu.gyp:icudata',
+            '<(icu_gyp_path):icudata',
           ],
         }],
       ],
@@ -891,24 +901,15 @@
           'toolsets': ['target'],
         }],
         ['v8_enable_i18n_support==1', {
-          'actions': [{
-            'action_name': 'js2c_i18n',
-            'inputs': [
-              '../../tools/js2c.py',
-              '<@(i18n_library_files)',
+          'variables': {
+            'i18n_library_files': [
+              '../../src/i18n.js',
             ],
-            'outputs': [
-              '<(SHARED_INTERMEDIATE_DIR)/i18n-libraries.cc',
-            ],
-            'action': [
-              'python',
-              '../../tools/js2c.py',
-              '<@(_outputs)',
-              'I18N',
-              '<(v8_compress_startup_data)',
-              '<@(i18n_library_files)'
-            ],
-          }],
+          },
+        }, {
+          'variables': {
+            'i18n_library_files': [],
+          },
         }],
       ],
       'variables': {
@@ -941,18 +942,7 @@
           '../../src/array-iterator.js',
           '../../src/harmony-string.js',
           '../../src/harmony-array.js',
-        ],
-        'i18n_library_files': [
-          '../../src/extensions/i18n/header.js',
-          '../../src/extensions/i18n/globals.js',
-          '../../src/extensions/i18n/locale.js',
-          '../../src/extensions/i18n/collator.js',
-          '../../src/extensions/i18n/number-format.js',
-          '../../src/extensions/i18n/date-format.js',
-          '../../src/extensions/i18n/break-iterator.js',
-          '../../src/extensions/i18n/i18n-utils.js',
-          '../../src/extensions/i18n/overrides.js',
-          '../../src/extensions/i18n/footer.js',
+          '../../src/harmony-math.js'
         ],
       },
       'actions': [
@@ -961,6 +951,7 @@
           'inputs': [
             '../../tools/js2c.py',
             '<@(library_files)',
+            '<@(i18n_library_files)',
           ],
           'outputs': [
             '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
@@ -971,7 +962,8 @@
             '<@(_outputs)',
             'CORE',
             '<(v8_compress_startup_data)',
-            '<@(library_files)'
+            '<@(library_files)',
+            '<@(i18n_library_files)',
           ],
         },
         {

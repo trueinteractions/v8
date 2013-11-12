@@ -55,6 +55,7 @@ class Bootstrapper;
 class CodeGenerator;
 class CodeRange;
 struct CodeStubInterfaceDescriptor;
+class CodeTracer;
 class CompilationCache;
 class ContextSlotCache;
 class ContextSwitcher;
@@ -75,8 +76,8 @@ class HTracer;
 class InlineRuntimeFunctionsTable;
 class NoAllocationStringAllocator;
 class InnerPointerToCodeCache;
-class MarkingThread;
 class PreallocatedMemoryThread;
+class RandomNumberGenerator;
 class RegExpStack;
 class SaveContext;
 class UnicodeCache;
@@ -273,10 +274,8 @@ class ThreadLocalTop BASE_EMBEDDED {
   Address handler_;   // try-blocks are chained through the stack
 
 #ifdef USE_SIMULATOR
-#if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_MIPS
   Simulator* simulator_;
 #endif
-#endif  // USE_SIMULATOR
 
   Address js_entry_sp_;  // the stack pointer of the bottom JS entry frame
   // the external callback we're currently in
@@ -307,8 +306,7 @@ class SystemThreadManager {
   enum ParallelSystemComponent {
     PARALLEL_SWEEPING,
     CONCURRENT_SWEEPING,
-    PARALLEL_MARKING,
-    PARALLEL_RECOMPILATION
+    CONCURRENT_RECOMPILATION
   };
 
   static int NumberOfParallelSystemThreads(ParallelSystemComponent type);
@@ -380,6 +378,7 @@ typedef List<HeapObject*, PreallocatedStorageAllocationPolicy> DebugObjectCache;
   V(bool, observer_delivery_pending, false)                                    \
   V(HStatistics*, hstatistics, NULL)                                           \
   V(HTracer*, htracer, NULL)                                                   \
+  V(CodeTracer*, code_tracer, NULL)                                            \
   ISOLATE_DEBUGGER_INIT_LIST(V)
 
 class Isolate {
@@ -496,6 +495,7 @@ class Isolate {
 
   bool IsDefaultIsolate() const { return this == default_isolate_; }
 
+  static void SetCrashIfDefaultIsolateInitialized();
   // Ensures that process-wide resources and the default isolate have been
   // allocated. It is only necessary to call this method in rare cases, for
   // example if you are using V8 from within the body of a static initializer.
@@ -752,6 +752,19 @@ class Isolate {
   // Returns if the top context may access the given global object. If
   // the result is false, the pending exception is guaranteed to be
   // set.
+
+  // TODO(yangguo): temporary wrappers
+  bool MayNamedAccessWrapper(Handle<JSObject> receiver,
+                             Handle<Object> key,
+                             v8::AccessType type) {
+    return MayNamedAccess(*receiver, *key, type);
+  }
+  bool MayIndexedAccessWrapper(Handle<JSObject> receiver,
+                               uint32_t index,
+                               v8::AccessType type) {
+    return MayIndexedAccess(*receiver, index, type);
+  }
+
   bool MayNamedAccess(JSObject* receiver,
                       Object* key,
                       v8::AccessType type);
@@ -983,6 +996,8 @@ class Isolate {
   void PreallocatedStorageDelete(void* p);
   void PreallocatedStorageInit(size_t size);
 
+  inline bool IsCodePreAgingActive();
+
 #ifdef ENABLE_DEBUGGER_SUPPORT
   Debugger* debugger() {
     if (!NoBarrier_Load(&debugger_initialized_)) InitializeDebugger();
@@ -1097,17 +1112,13 @@ class Isolate {
 #endif  // DEBUG
 
   OptimizingCompilerThread* optimizing_compiler_thread() {
-    return &optimizing_compiler_thread_;
+    return optimizing_compiler_thread_;
   }
 
   // PreInits and returns a default isolate. Needed when a new thread tries
   // to create a Locker for the first time (the lock itself is in the isolate).
   // TODO(svenpanne) This method is on death row...
   static v8::Isolate* GetDefaultIsolateForLocking();
-
-  MarkingThread** marking_threads() {
-    return marking_thread_;
-  }
 
   SweeperThread** sweeper_threads() {
     return sweeper_thread_;
@@ -1117,6 +1128,7 @@ class Isolate {
 
   HStatistics* GetHStatistics();
   HTracer* GetHTracer();
+  CodeTracer* GetCodeTracer();
 
   FunctionEntryHook function_entry_hook() { return function_entry_hook_; }
   void set_function_entry_hook(FunctionEntryHook function_entry_hook) {
@@ -1124,6 +1136,8 @@ class Isolate {
   }
 
   void* stress_deopt_count_address() { return &stress_deopt_count_; }
+
+  inline RandomNumberGenerator* random_number_generator();
 
   // Given an address occupied by a live code object, return that object.
   Object* FindCodeObject(Address a);
@@ -1299,6 +1313,7 @@ class Isolate {
   DateCache* date_cache_;
   unibrow::Mapping<unibrow::Ecma262Canonicalize> interp_canonicalize_mapping_;
   CodeStubInterfaceDescriptor* code_stub_interface_descriptors_;
+  RandomNumberGenerator* random_number_generator_;
 
   // True if fatal error has been signaled for this isolate.
   bool has_fatal_error_;
@@ -1356,8 +1371,7 @@ class Isolate {
 #endif
 
   DeferredHandles* deferred_handles_head_;
-  OptimizingCompilerThread optimizing_compiler_thread_;
-  MarkingThread** marking_thread_;
+  OptimizingCompilerThread* optimizing_compiler_thread_;
   SweeperThread** sweeper_thread_;
 
   // Counts deopt points if deopt_every_n_times is enabled.
@@ -1366,7 +1380,6 @@ class Isolate {
   friend class ExecutionAccess;
   friend class HandleScopeImplementer;
   friend class IsolateInitializer;
-  friend class MarkingThread;
   friend class OptimizingCompilerThread;
   friend class SweeperThread;
   friend class ThreadManager;
@@ -1414,39 +1427,19 @@ class SaveContext BASE_EMBEDDED {
 class AssertNoContextChange BASE_EMBEDDED {
 #ifdef DEBUG
  public:
-  AssertNoContextChange() : context_(Isolate::Current()->context()) { }
+  explicit AssertNoContextChange(Isolate* isolate)
+    : isolate_(isolate),
+      context_(isolate->context(), isolate) { }
   ~AssertNoContextChange() {
-    ASSERT(Isolate::Current()->context() == *context_);
+    ASSERT(isolate_->context() == *context_);
   }
 
  private:
+  Isolate* isolate_;
   Handle<Context> context_;
 #else
  public:
-  AssertNoContextChange() { }
-#endif
-};
-
-
-// TODO(mstarzinger): Depracate as soon as everything is handlified.
-class AssertNoContextChangeWithHandleScope BASE_EMBEDDED {
-#ifdef DEBUG
- public:
-  AssertNoContextChangeWithHandleScope() :
-      scope_(Isolate::Current()),
-      context_(Isolate::Current()->context(), Isolate::Current()) {
-  }
-
-  ~AssertNoContextChangeWithHandleScope() {
-    ASSERT(Isolate::Current()->context() == *context_);
-  }
-
- private:
-  HandleScope scope_;
-  Handle<Context> context_;
-#else
- public:
-  AssertNoContextChangeWithHandleScope() { }
+  explicit AssertNoContextChange(Isolate* isolate) { }
 #endif
 };
 
@@ -1506,12 +1499,6 @@ class PostponeInterruptsScope BASE_EMBEDDED {
 };
 
 
-// Temporary macros for accessing current isolate and its subobjects.
-// They provide better readability, especially when used a lot in the code.
-#define HEAP (v8::internal::Isolate::Current()->heap())
-#define ISOLATE (v8::internal::Isolate::Current())
-
-
 // Tells whether the native context is marked with out of memory.
 inline bool Context::has_out_of_memory() {
   return native_context()->out_of_memory()->IsTrue();
@@ -1520,9 +1507,76 @@ inline bool Context::has_out_of_memory() {
 
 // Mark the native context with out of memory.
 inline void Context::mark_out_of_memory() {
-  native_context()->set_out_of_memory(HEAP->true_value());
+  native_context()->set_out_of_memory(GetIsolate()->heap()->true_value());
 }
 
+class CodeTracer V8_FINAL : public Malloced {
+ public:
+  explicit CodeTracer(int isolate_id)
+      : file_(NULL),
+        scope_depth_(0) {
+    if (!ShouldRedirect()) {
+      file_ = stdout;
+      return;
+    }
+
+    if (FLAG_redirect_code_traces_to == NULL) {
+      OS::SNPrintF(filename_,
+                   "code-%d-%d.asm",
+                   OS::GetCurrentProcessId(),
+                   isolate_id);
+    } else {
+      OS::StrNCpy(filename_, FLAG_redirect_code_traces_to, filename_.length());
+    }
+
+    WriteChars(filename_.start(), "", 0, false);
+  }
+
+  class Scope {
+   public:
+    explicit Scope(CodeTracer* tracer) : tracer_(tracer) { tracer->OpenFile(); }
+    ~Scope() { tracer_->CloseFile();  }
+
+    FILE* file() const { return tracer_->file(); }
+
+   private:
+    CodeTracer* tracer_;
+  };
+
+  void OpenFile() {
+    if (!ShouldRedirect()) {
+      return;
+    }
+
+    if (file_ == NULL) {
+      file_ = OS::FOpen(filename_.start(), "a");
+    }
+
+    scope_depth_++;
+  }
+
+  void CloseFile() {
+    if (!ShouldRedirect()) {
+      return;
+    }
+
+    if (--scope_depth_ == 0) {
+      fclose(file_);
+      file_ = NULL;
+    }
+  }
+
+  FILE* file() const { return file_; }
+
+ private:
+  static bool ShouldRedirect() {
+    return FLAG_redirect_code_traces;
+  }
+
+  EmbeddedVector<char, 128> filename_;
+  FILE* file_;
+  int scope_depth_;
+};
 
 } }  // namespace v8::internal
 

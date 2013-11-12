@@ -1017,7 +1017,7 @@ Object* Debug::Break(Arguments args) {
       // Clear queue
       thread_local_.queued_step_count_ = 0;
 
-      PrepareStep(StepNext, step_count);
+      PrepareStep(StepNext, step_count, StackFrame::NO_ID);
     } else {
       // Notify the debug event listeners.
       isolate_->debugger()->OnDebugBreak(break_points_hit, false);
@@ -1055,7 +1055,7 @@ Object* Debug::Break(Arguments args) {
     ClearStepping();
 
     // Set up for the remaining steps.
-    PrepareStep(step_action, step_count);
+    PrepareStep(step_action, step_count, StackFrame::NO_ID);
   }
 
   if (thread_local_.frame_drop_mode_ == FRAMES_UNTOUCHED) {
@@ -1376,7 +1376,9 @@ bool Debug::IsBreakOnException(ExceptionBreakType type) {
 }
 
 
-void Debug::PrepareStep(StepAction step_action, int step_count) {
+void Debug::PrepareStep(StepAction step_action,
+                        int step_count,
+                        StackFrame::Id frame_id) {
   HandleScope scope(isolate_);
 
   PrepareForBreakPoints();
@@ -1401,6 +1403,9 @@ void Debug::PrepareStep(StepAction step_action, int step_count) {
   if (id == StackFrame::NO_ID) {
     // If there is no JavaScript stack don't do anything.
     return;
+  }
+  if (frame_id != StackFrame::NO_ID) {
+    id = frame_id;
   }
   JavaScriptFrameIterator frames_it(isolate_, id);
   JavaScriptFrame* frame = frames_it.frame();
@@ -1788,10 +1793,14 @@ void Debug::HandleStepIn(Handle<JSFunction> function,
         // function to be called and not the code for Builtins::FunctionApply or
         // Builtins::FunctionCall. The receiver of call/apply is the target
         // function.
-        if (!holder.is_null() && holder->IsJSFunction() &&
-            !JSFunction::cast(*holder)->IsBuiltin()) {
+        if (!holder.is_null() && holder->IsJSFunction()) {
           Handle<JSFunction> js_function = Handle<JSFunction>::cast(holder);
-          Debug::FloodWithOneShot(js_function);
+          if (!js_function->IsBuiltin()) {
+            Debug::FloodWithOneShot(js_function);
+          } else if (js_function->shared()->bound()) {
+            // Handle Function.prototype.bind
+            Debug::FloodBoundFunctionWithOneShot(js_function);
+          }
         }
       } else {
         Debug::FloodWithOneShot(function);
@@ -2097,6 +2106,7 @@ void Debug::PrepareForBreakPoints() {
 
           if (!shared->allows_lazy_compilation()) continue;
           if (!shared->script()->IsScript()) continue;
+          if (function->IsBuiltin()) continue;
           if (shared->code()->gc_metadata() == active_code_marker) continue;
 
           Code::Kind kind = function->code()->kind();
@@ -2105,8 +2115,7 @@ void Debug::PrepareForBreakPoints() {
             function->set_code(*lazy_compile);
             function->shared()->set_code(*lazy_compile);
           } else if (kind == Code::BUILTIN &&
-              (function->IsMarkedForInstallingRecompiledCode() ||
-               function->IsInRecompileQueue() ||
+              (function->IsInRecompileQueue() ||
                function->IsMarkedForLazyRecompilation() ||
                function->IsMarkedForConcurrentRecompilation())) {
             // Abort in-flight compilation.
@@ -3127,8 +3136,7 @@ void Debugger::NotifyMessageHandler(v8::DebugEvent event,
     v8::Local<v8::Function> fun =
         v8::Local<v8::Function>::Cast(api_exec_state->Get(fun_name));
 
-    v8::Handle<v8::Boolean> running =
-        auto_continue ? v8::True() : v8::False();
+    v8::Handle<v8::Boolean> running = v8::Boolean::New(auto_continue);
     static const int kArgc = 1;
     v8::Handle<Value> argv[kArgc] = { running };
     cmd_processor = v8::Local<v8::Object>::Cast(
@@ -3616,6 +3624,11 @@ bool MessageImpl::WillStartRunning() const {
 
 v8::Handle<v8::Object> MessageImpl::GetExecutionState() const {
   return v8::Utils::ToLocal(exec_state_);
+}
+
+
+v8::Isolate* MessageImpl::GetIsolate() const {
+  return reinterpret_cast<v8::Isolate*>(exec_state_->GetIsolate());
 }
 
 

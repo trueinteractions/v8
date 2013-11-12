@@ -796,7 +796,7 @@ function CallSite(receiver, fun, pos, strict_mode) {
 }
 
 function CallSiteGetThis() {
-  return this[CallSiteStrictModeKey] ? void 0 : this[CallSiteReceiverKey];
+  return this[CallSiteStrictModeKey] ? UNDEFINED : this[CallSiteReceiverKey];
 }
 
 function CallSiteGetTypeName() {
@@ -826,7 +826,7 @@ function CallSiteGetScriptNameOrSourceURL() {
 }
 
 function CallSiteGetFunction() {
-  return this[CallSiteStrictModeKey] ? void 0 : this[CallSiteFunctionKey];
+  return this[CallSiteStrictModeKey] ? UNDEFINED : this[CallSiteFunctionKey];
 }
 
 function CallSiteGetFunctionName() {
@@ -1092,7 +1092,7 @@ function FormatStackTrace(obj, error_string, frames) {
     var array = [];
     %MoveArrayContents(frames, array);
     formatting_custom_stack_trace = true;
-    var stack_trace = void 0;
+    var stack_trace = UNDEFINED;
     try {
       stack_trace = $Error.prepareStackTrace(obj, array);
     } catch (e) {
@@ -1160,7 +1160,7 @@ function captureStackTrace(obj, cons_opt) {
     // Turn this accessor into a data property.
     %DefineOrRedefineDataProperty(obj, 'stack', result, NONE);
     // Release context values.
-    stack = error_string = void 0;
+    stack = error_string = UNDEFINED;
     return result;
   };
 
@@ -1171,7 +1171,7 @@ function captureStackTrace(obj, cons_opt) {
     %DefineOrRedefineDataProperty(this, 'stack', v, NONE);
     if (this === obj) {
       // Release context values if holder is the same as the receiver.
-      stack = error_string = void 0;
+      stack = error_string = UNDEFINED;
     }
   };
 
@@ -1213,7 +1213,7 @@ function SetUpError() {
         // Define all the expected properties directly on the error
         // object. This avoids going through getters and setters defined
         // on prototype objects.
-        %IgnoreAttributesAndSetProperty(this, 'stack', void 0, DONT_ENUM);
+        %IgnoreAttributesAndSetProperty(this, 'stack', UNDEFINED, DONT_ENUM);
         if (!IS_UNDEFINED(m)) {
           %IgnoreAttributesAndSetProperty(
             this, 'message', ToString(m), DONT_ENUM);
@@ -1247,24 +1247,25 @@ var visited_errors = new InternalArray();
 var cyclic_error_marker = new $Object();
 
 function GetPropertyWithoutInvokingMonkeyGetters(error, name) {
+  var current = error;
   // Climb the prototype chain until we find the holder.
-  while (error && !%HasLocalProperty(error, name)) {
-    error = %GetPrototype(error);
+  while (current && !%HasLocalProperty(current, name)) {
+    current = %GetPrototype(current);
   }
-  if (error === null) return void 0;
-  if (!IS_OBJECT(error)) return error[name];
+  if (IS_NULL(current)) return UNDEFINED;
+  if (!IS_OBJECT(current)) return error[name];
   // If the property is an accessor on one of the predefined errors that can be
   // generated statically by the compiler, don't touch it. This is to address
   // http://code.google.com/p/chromium/issues/detail?id=69187
-  var desc = %GetOwnProperty(error, name);
+  var desc = %GetOwnProperty(current, name);
   if (desc && desc[IS_ACCESSOR_INDEX]) {
     var isName = name === "name";
-    if (error === $ReferenceError.prototype)
-      return isName ? "ReferenceError" : void 0;
-    if (error === $SyntaxError.prototype)
-      return isName ? "SyntaxError" : void 0;
-    if (error === $TypeError.prototype)
-      return isName ? "TypeError" : void 0;
+    if (current === $ReferenceError.prototype)
+      return isName ? "ReferenceError" : UNDEFINED;
+    if (current === $SyntaxError.prototype)
+      return isName ? "SyntaxError" : UNDEFINED;
+    if (current === $TypeError.prototype)
+      return isName ? "TypeError" : UNDEFINED;
   }
   // Otherwise, read normally.
   return error[name];

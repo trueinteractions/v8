@@ -112,7 +112,7 @@ void CompilationInfo::Initialize(Isolate* isolate,
   zone_ = zone;
   deferred_handles_ = NULL;
   code_stub_ = NULL;
-  prologue_offset_ = kPrologueOffsetNotSet;
+  prologue_offset_ = Code::kPrologueOffsetNotSet;
   opt_count_ = shared_info().is_null() ? 0 : shared_info()->opt_count();
   no_frame_ranges_ = isolate->cpu_profiler()->is_profiling()
                    ? new List<OffsetRange>(2) : NULL;
@@ -123,7 +123,7 @@ void CompilationInfo::Initialize(Isolate* isolate,
     mode_ = STUB;
     return;
   }
-  mode_ = isolate->use_crankshaft() ? mode : NONOPT;
+  mode_ = mode;
   abort_due_to_dependency_ = false;
   if (script_->type()->value() == Script::TYPE_NATIVE) {
     MarkAsNative();
@@ -260,10 +260,13 @@ static bool AlwaysFullCompiler(Isolate* isolate) {
 }
 
 
-void OptimizingCompiler::RecordOptimizationStats() {
+void RecompileJob::RecordOptimizationStats() {
   Handle<JSFunction> function = info()->closure();
-  int opt_count = function->shared()->opt_count();
-  function->shared()->set_opt_count(opt_count + 1);
+  if (!function->IsOptimized()) {
+    // Concurrent recompilation and OSR may race.  Increment only once.
+    int opt_count = function->shared()->opt_count();
+    function->shared()->set_opt_count(opt_count + 1);
+  }
   double ms_creategraph = time_taken_to_create_graph_.InMillisecondsF();
   double ms_optimize = time_taken_to_optimize_.InMillisecondsF();
   double ms_codegen = time_taken_to_codegen_.InMillisecondsF();
@@ -297,23 +300,60 @@ void OptimizingCompiler::RecordOptimizationStats() {
 // A return value of true indicates the compilation pipeline is still
 // going, not necessarily that we optimized the code.
 static bool MakeCrankshaftCode(CompilationInfo* info) {
-  OptimizingCompiler compiler(info);
-  OptimizingCompiler::Status status = compiler.CreateGraph();
+  RecompileJob job(info);
+  RecompileJob::Status status = job.CreateGraph();
 
-  if (status != OptimizingCompiler::SUCCEEDED) {
-    return status != OptimizingCompiler::FAILED;
+  if (status != RecompileJob::SUCCEEDED) {
+    return status != RecompileJob::FAILED;
   }
-  status = compiler.OptimizeGraph();
-  if (status != OptimizingCompiler::SUCCEEDED) {
-    status = compiler.AbortOptimization();
-    return status != OptimizingCompiler::FAILED;
+  status = job.OptimizeGraph();
+  if (status != RecompileJob::SUCCEEDED) {
+    status = job.AbortOptimization();
+    return status != RecompileJob::FAILED;
   }
-  status = compiler.GenerateAndInstallCode();
-  return status != OptimizingCompiler::FAILED;
+  status = job.GenerateAndInstallCode();
+  return status != RecompileJob::FAILED;
 }
 
 
-OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
+class HOptimizedGraphBuilderWithPotisions: public HOptimizedGraphBuilder {
+ public:
+  explicit HOptimizedGraphBuilderWithPotisions(CompilationInfo* info)
+      : HOptimizedGraphBuilder(info) {
+  }
+
+#define DEF_VISIT(type)                                 \
+  virtual void Visit##type(type* node) V8_OVERRIDE {    \
+    if (node->position() != RelocInfo::kNoPosition) {   \
+      SetSourcePosition(node->position());              \
+    }                                                   \
+    HOptimizedGraphBuilder::Visit##type(node);          \
+  }
+  EXPRESSION_NODE_LIST(DEF_VISIT)
+#undef DEF_VISIT
+
+#define DEF_VISIT(type)                                          \
+  virtual void Visit##type(type* node) V8_OVERRIDE {             \
+    if (node->position() != RelocInfo::kNoPosition) {            \
+      SetSourcePosition(node->position());                       \
+    }                                                            \
+    HOptimizedGraphBuilder::Visit##type(node);                   \
+  }
+  STATEMENT_NODE_LIST(DEF_VISIT)
+#undef DEF_VISIT
+
+#define DEF_VISIT(type)                                            \
+  virtual void Visit##type(type* node) V8_OVERRIDE {               \
+    HOptimizedGraphBuilder::Visit##type(node);                     \
+  }
+  MODULE_NODE_LIST(DEF_VISIT)
+  DECLARATION_NODE_LIST(DEF_VISIT)
+  AUXILIARY_NODE_LIST(DEF_VISIT)
+#undef DEF_VISIT
+};
+
+
+RecompileJob::Status RecompileJob::CreateGraph() {
   ASSERT(isolate()->use_crankshaft());
   ASSERT(info()->IsOptimizing());
   ASSERT(!info()->IsCompilingForDebugging());
@@ -358,7 +398,7 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
   }
 
   const int locals_limit = LUnallocated::kMaxFixedSlotIndex;
-  if (!info()->osr_ast_id().IsNone() &&
+  if (info()->is_osr() &&
       scope->num_parameters() + 1 + scope->num_stack_slots() > locals_limit) {
     info()->set_bailout_reason(kTooManyParametersLocals);
     return AbortOptimization();
@@ -419,7 +459,9 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
   // Type-check the function.
   AstTyper::Run(info());
 
-  graph_builder_ = new(info()->zone()) HOptimizedGraphBuilder(info());
+  graph_builder_ = FLAG_emit_opt_code_positions
+      ? new(info()->zone()) HOptimizedGraphBuilderWithPotisions(info())
+      : new(info()->zone()) HOptimizedGraphBuilder(info());
 
   Timer t(this, &time_taken_to_create_graph_);
   graph_ = graph_builder_->CreateGraph();
@@ -452,7 +494,7 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
 }
 
 
-OptimizingCompiler::Status OptimizingCompiler::OptimizeGraph() {
+RecompileJob::Status RecompileJob::OptimizeGraph() {
   DisallowHeapAllocation no_allocation;
   DisallowHandleAllocation no_handles;
   DisallowHandleDereference no_deref;
@@ -475,7 +517,7 @@ OptimizingCompiler::Status OptimizingCompiler::OptimizeGraph() {
 }
 
 
-OptimizingCompiler::Status OptimizingCompiler::GenerateAndInstallCode() {
+RecompileJob::Status RecompileJob::GenerateAndInstallCode() {
   ASSERT(last_status() == SUCCEEDED);
   ASSERT(!info()->HasAbortedDueToDependencyChange());
   DisallowCodeDependencyChange no_dependency_change;
@@ -555,6 +597,33 @@ static bool DebuggerWantsEagerCompilation(CompilationInfo* info,
 }
 
 
+// Sets the expected number of properties based on estimate from compiler.
+void SetExpectedNofPropertiesFromEstimate(Handle<SharedFunctionInfo> shared,
+                                          int estimate) {
+  // See the comment in SetExpectedNofProperties.
+  if (shared->live_objects_may_exist()) return;
+
+  // If no properties are added in the constructor, they are more likely
+  // to be added later.
+  if (estimate == 0) estimate = 2;
+
+  // TODO(yangguo): check whether those heuristics are still up-to-date.
+  // We do not shrink objects that go into a snapshot (yet), so we adjust
+  // the estimate conservatively.
+  if (Serializer::enabled()) {
+    estimate += 2;
+  } else if (FLAG_clever_optimizations) {
+    // Inobject slack tracking will reclaim redundant inobject space later,
+    // so we can afford to adjust the estimate generously.
+    estimate += 8;
+  } else {
+    estimate += 3;
+  }
+
+  shared->set_expected_nof_properties(estimate);
+}
+
+
 static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
   PostponeInterruptsScope postpone(isolate);
@@ -599,66 +668,70 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
     }
   }
 
-  // Measure how long it takes to do the compilation; only take the
-  // rest of the function into account to avoid overlap with the
-  // parsing statistics.
-  HistogramTimer* rate = info->is_eval()
-      ? info->isolate()->counters()->compile_eval()
-      : info->isolate()->counters()->compile();
-  HistogramTimerScope timer(rate);
-
-  // Compile the code.
   FunctionLiteral* lit = info->function();
   LiveEditFunctionTracker live_edit_tracker(isolate, lit);
-  if (!MakeCode(info)) {
-    if (!isolate->has_pending_exception()) isolate->StackOverflow();
-    return Handle<SharedFunctionInfo>::null();
+  Handle<SharedFunctionInfo> result;
+  {
+    // Measure how long it takes to do the compilation; only take the
+    // rest of the function into account to avoid overlap with the
+    // parsing statistics.
+    HistogramTimer* rate = info->is_eval()
+          ? info->isolate()->counters()->compile_eval()
+          : info->isolate()->counters()->compile();
+    HistogramTimerScope timer(rate);
+
+    // Compile the code.
+    if (!MakeCode(info)) {
+      if (!isolate->has_pending_exception()) isolate->StackOverflow();
+      return Handle<SharedFunctionInfo>::null();
+    }
+
+    // Allocate function.
+    ASSERT(!info->code().is_null());
+    result =
+        isolate->factory()->NewSharedFunctionInfo(
+            lit->name(),
+            lit->materialized_literal_count(),
+            lit->is_generator(),
+            info->code(),
+            ScopeInfo::Create(info->scope(), info->zone()));
+
+    ASSERT_EQ(RelocInfo::kNoPosition, lit->function_token_position());
+    Compiler::SetFunctionInfo(result, lit, true, script);
+
+    if (script->name()->IsString()) {
+      PROFILE(isolate, CodeCreateEvent(
+          info->is_eval()
+          ? Logger::EVAL_TAG
+              : Logger::ToNativeByScript(Logger::SCRIPT_TAG, *script),
+                *info->code(),
+                *result,
+                info,
+                String::cast(script->name())));
+      GDBJIT(AddCode(Handle<String>(String::cast(script->name())),
+                     script,
+                     info->code(),
+                     info));
+    } else {
+      PROFILE(isolate, CodeCreateEvent(
+          info->is_eval()
+          ? Logger::EVAL_TAG
+              : Logger::ToNativeByScript(Logger::SCRIPT_TAG, *script),
+                *info->code(),
+                *result,
+                info,
+                isolate->heap()->empty_string()));
+      GDBJIT(AddCode(Handle<String>(), script, info->code(), info));
+    }
+
+    // Hint to the runtime system used when allocating space for initial
+    // property space by setting the expected number of properties for
+    // the instances of the function.
+    SetExpectedNofPropertiesFromEstimate(result,
+                                         lit->expected_property_count());
+
+    script->set_compilation_state(Script::COMPILATION_STATE_COMPILED);
   }
-
-  // Allocate function.
-  ASSERT(!info->code().is_null());
-  Handle<SharedFunctionInfo> result =
-      isolate->factory()->NewSharedFunctionInfo(
-          lit->name(),
-          lit->materialized_literal_count(),
-          lit->is_generator(),
-          info->code(),
-          ScopeInfo::Create(info->scope(), info->zone()));
-
-  ASSERT_EQ(RelocInfo::kNoPosition, lit->function_token_position());
-  Compiler::SetFunctionInfo(result, lit, true, script);
-
-  if (script->name()->IsString()) {
-    PROFILE(isolate, CodeCreateEvent(
-        info->is_eval()
-            ? Logger::EVAL_TAG
-            : Logger::ToNativeByScript(Logger::SCRIPT_TAG, *script),
-        *info->code(),
-        *result,
-        info,
-        String::cast(script->name())));
-    GDBJIT(AddCode(Handle<String>(String::cast(script->name())),
-                   script,
-                   info->code(),
-                   info));
-  } else {
-    PROFILE(isolate, CodeCreateEvent(
-        info->is_eval()
-            ? Logger::EVAL_TAG
-            : Logger::ToNativeByScript(Logger::SCRIPT_TAG, *script),
-        *info->code(),
-        *result,
-        info,
-        isolate->heap()->empty_string()));
-    GDBJIT(AddCode(Handle<String>(), script, info->code(), info));
-  }
-
-  // Hint to the runtime system used when allocating space for initial
-  // property space by setting the expected number of properties for
-  // the instances of the function.
-  SetExpectedNofPropertiesFromEstimate(result, lit->expected_property_count());
-
-  script->set_compilation_state(Script::COMPILATION_STATE_COMPILED);
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Notify debugger
@@ -725,7 +798,7 @@ Handle<SharedFunctionInfo> Compiler::Compile(Handle<String> source,
     }
     script->set_is_shared_cross_origin(is_shared_cross_origin);
 
-    script->set_data(script_data.is_null() ? HEAP->undefined_value()
+    script->set_data(script_data.is_null() ? isolate->heap()->undefined_value()
                                            : *script_data);
 
     // Compile the function and add it to the cache.
@@ -742,8 +815,8 @@ Handle<SharedFunctionInfo> Compiler::Compile(Handle<String> source,
       compilation_cache->PutScript(source, context, result);
     }
   } else {
-    if (result->ic_age() != HEAP->global_ic_age()) {
-      result->ResetForNewContext(HEAP->global_ic_age());
+    if (result->ic_age() != isolate->heap()->global_ic_age()) {
+      result->ResetForNewContext(isolate->heap()->global_ic_age());
     }
   }
 
@@ -805,8 +878,8 @@ Handle<SharedFunctionInfo> Compiler::CompileEval(Handle<String> source,
       }
     }
   } else {
-    if (result->ic_age() != HEAP->global_ic_age()) {
-      result->ResetForNewContext(HEAP->global_ic_age());
+    if (result->ic_age() != isolate->heap()->global_ic_age()) {
+      result->ResetForNewContext(isolate->heap()->global_ic_age());
     }
   }
 
@@ -884,7 +957,7 @@ static void InsertCodeIntoOptimizedCodeMap(CompilationInfo* info) {
   if (code->kind() != Code::OPTIMIZED_FUNCTION) return;  // Nothing to do.
 
   // Cache non-OSR optimized code.
-  if (FLAG_cache_optimized_code && info->osr_ast_id().IsNone()) {
+  if (FLAG_cache_optimized_code && !info->is_osr()) {
     Handle<JSFunction> function = info->closure();
     Handle<SharedFunctionInfo> shared(function->shared());
     Handle<FixedArray> literals(function->literals());
@@ -899,7 +972,7 @@ static bool InstallCodeFromOptimizedCodeMap(CompilationInfo* info) {
   if (!info->IsOptimizing()) return false;  // Nothing to look up.
 
   // Lookup non-OSR optimized code.
-  if (FLAG_cache_optimized_code && info->osr_ast_id().IsNone()) {
+  if (FLAG_cache_optimized_code && !info->is_osr()) {
     Handle<SharedFunctionInfo> shared = info->shared_info();
     Handle<JSFunction> function = info->closure();
     ASSERT(!function.is_null());
@@ -955,12 +1028,15 @@ bool Compiler::CompileLazy(CompilationInfo* info) {
       InstallCodeCommon(info);
 
       if (info->IsOptimizing()) {
+        // Optimized code successfully created.
         Handle<Code> code = info->code();
         ASSERT(shared->scope_info() != ScopeInfo::Empty(isolate));
+        // TODO(titzer): Only replace the code if it was not an OSR compile.
         info->closure()->ReplaceCode(*code);
         InsertCodeIntoOptimizedCodeMap(info);
         return true;
-      } else {
+      } else if (!info->is_osr()) {
+        // Compilation failed. Replace with full code if not OSR compile.
         return InstallFullCode(info);
       }
     }
@@ -1029,16 +1105,15 @@ bool Compiler::RecompileConcurrent(Handle<JSFunction> closure,
       info->SaveHandles();
 
       if (Rewriter::Rewrite(*info) && Scope::Analyze(*info)) {
-        OptimizingCompiler* compiler =
-            new(info->zone()) OptimizingCompiler(*info);
-        OptimizingCompiler::Status status = compiler->CreateGraph();
-        if (status == OptimizingCompiler::SUCCEEDED) {
+        RecompileJob* job = new(info->zone()) RecompileJob(*info);
+        RecompileJob::Status status = job->CreateGraph();
+        if (status == RecompileJob::SUCCEEDED) {
           info.Detach();
           shared->code()->set_profiler_ticks(0);
-          isolate->optimizing_compiler_thread()->QueueForOptimization(compiler);
+          isolate->optimizing_compiler_thread()->QueueForOptimization(job);
           ASSERT(!isolate->has_pending_exception());
           return true;
-        } else if (status == OptimizingCompiler::BAILED_OUT) {
+        } else if (status == RecompileJob::BAILED_OUT) {
           isolate->clear_pending_exception();
           InstallFullCode(*info);
         }
@@ -1051,8 +1126,8 @@ bool Compiler::RecompileConcurrent(Handle<JSFunction> closure,
 }
 
 
-bool Compiler::InstallOptimizedCode(OptimizingCompiler* optimizing_compiler) {
-  SmartPointer<CompilationInfo> info(optimizing_compiler->info());
+Handle<Code> Compiler::InstallOptimizedCode(RecompileJob* job) {
+  SmartPointer<CompilationInfo> info(job->info());
   // The function may have already been optimized by OSR.  Simply continue.
   // Except when OSR already disabled optimization for some reason.
   if (info->shared_info()->optimization_disabled()) {
@@ -1063,8 +1138,8 @@ bool Compiler::InstallOptimizedCode(OptimizingCompiler* optimizing_compiler) {
       info->closure()->PrintName();
       PrintF(" as it has been disabled.\n");
     }
-    ASSERT(!info->closure()->IsMarkedForInstallingRecompiledCode());
-    return false;
+    ASSERT(!info->closure()->IsInRecompileQueue());
+    return Handle<Code>::null();
   }
 
   Isolate* isolate = info->isolate();
@@ -1073,24 +1148,24 @@ bool Compiler::InstallOptimizedCode(OptimizingCompiler* optimizing_compiler) {
       isolate, Logger::TimerEventScope::v8_recompile_synchronous);
   // If crankshaft succeeded, install the optimized code else install
   // the unoptimized code.
-  OptimizingCompiler::Status status = optimizing_compiler->last_status();
+  RecompileJob::Status status = job->last_status();
   if (info->HasAbortedDueToDependencyChange()) {
     info->set_bailout_reason(kBailedOutDueToDependencyChange);
-    status = optimizing_compiler->AbortOptimization();
-  } else if (status != OptimizingCompiler::SUCCEEDED) {
+    status = job->AbortOptimization();
+  } else if (status != RecompileJob::SUCCEEDED) {
     info->set_bailout_reason(kFailedBailedOutLastTime);
-    status = optimizing_compiler->AbortOptimization();
+    status = job->AbortOptimization();
   } else if (isolate->DebuggerHasBreakPoints()) {
     info->set_bailout_reason(kDebuggerIsActive);
-    status = optimizing_compiler->AbortOptimization();
+    status = job->AbortOptimization();
   } else {
-    status = optimizing_compiler->GenerateAndInstallCode();
-    ASSERT(status == OptimizingCompiler::SUCCEEDED ||
-           status == OptimizingCompiler::BAILED_OUT);
+    status = job->GenerateAndInstallCode();
+    ASSERT(status == RecompileJob::SUCCEEDED ||
+           status == RecompileJob::BAILED_OUT);
   }
 
   InstallCodeCommon(*info);
-  if (status == OptimizingCompiler::SUCCEEDED) {
+  if (status == RecompileJob::SUCCEEDED) {
     Handle<Code> code = info->code();
     ASSERT(info->shared_info()->scope_info() != ScopeInfo::Empty(isolate));
     info->closure()->ReplaceCode(*code);
@@ -1110,169 +1185,9 @@ bool Compiler::InstallOptimizedCode(OptimizingCompiler* optimizing_compiler) {
   // Optimized code is finally replacing unoptimized code.  Reset the latter's
   // profiler ticks to prevent too soon re-opt after a deopt.
   info->shared_info()->code()->set_profiler_ticks(0);
-  ASSERT(!info->closure()->IsMarkedForInstallingRecompiledCode());
-  return status == OptimizingCompiler::SUCCEEDED;
-}
-
-
-static uint32_t CurrentPcOffset(Isolate* isolate,
-                                Handle<JSFunction> function,
-                                Handle<Code> unoptimized) {
-  JavaScriptFrameIterator it(isolate);
-  JavaScriptFrame* frame = it.frame();
-  ASSERT(frame->function() == *function);
-  ASSERT(frame->LookupCode() == *unoptimized);
-  ASSERT(unoptimized->contains(frame->pc()));
-
-  // Use linear search of the unoptimized code's back edge table to find
-  // the AST id matching the PC.
-  return static_cast<uint32_t>(frame->pc() - unoptimized->instruction_start());
-}
-
-
-static bool IsSuitableForOnStackReplacement(Isolate* isolate,
-                                            Handle<JSFunction> function,
-                                            Handle<Code> unoptimized) {
-  // Keep track of whether we've succeeded in optimizing.
-  if (!unoptimized->optimizable()) return false;
-  // If we are trying to do OSR when there are already optimized
-  // activations of the function, it means (a) the function is directly or
-  // indirectly recursive and (b) an optimized invocation has been
-  // deoptimized so that we are currently in an unoptimized activation.
-  // Check for optimized activations of this function.
-  for (JavaScriptFrameIterator it(isolate); !it.done(); it.Advance()) {
-    JavaScriptFrame* frame = it.frame();
-    if (frame->is_optimized() && frame->function() == *function) return false;
-  }
-
-  return true;
-}
-
-
-BailoutId Compiler::CompileForOnStackReplacement(Handle<JSFunction> function) {
-  Isolate* isolate = function->GetIsolate();
-  // We have hit a back edge in an unoptimized frame for a function that was
-  // selected for on-stack replacement.  Find the unoptimized code object.
-  Handle<Code> unoptimized(function->shared()->code(), isolate);
-
-  Deoptimizer::RevertInterruptCode(isolate, *unoptimized);
-  if (FLAG_trace_osr) {
-    PrintF("[OSR - restored original interrupt calls in ");
-    function->PrintName();
-    PrintF("]\n");
-  }
-
-  if (!IsSuitableForOnStackReplacement(isolate, function, unoptimized)) {
-    return BailoutId::None();
-  }
-
-  uint32_t pc_offset = CurrentPcOffset(isolate, function, unoptimized);
-
-  BailoutId ast_id = unoptimized->TranslatePcOffsetToAstId(pc_offset);
-  ASSERT(!ast_id.IsNone());
-  if (FLAG_trace_osr) {
-    PrintF("[OSR - replacing at AST id %d in ", ast_id.ToInt());
-    function->PrintName();
-    PrintF("]\n");
-  }
-
-  // Try to compile the optimized code.  A true return value from
-  // CompileOptimized means that compilation succeeded, not necessarily
-  // that optimization succeeded.
-  if (JSFunction::CompileOptimized(function, ast_id, CLEAR_EXCEPTION) &&
-      function->IsOptimized()) {
-    DeoptimizationInputData* data = DeoptimizationInputData::cast(
-        function->code()->deoptimization_data());
-    if (data->OsrPcOffset()->value() >= 0) {
-      if (FLAG_trace_osr) {
-        PrintF("[OSR - entry, offset %d in optimized code]\n",
-            data->OsrPcOffset()->value());
-      }
-      ASSERT(BailoutId(data->OsrAstId()->value()) == ast_id);
-      return ast_id;
-    }
-  } else {
-    if (FLAG_trace_osr) {
-      PrintF("[OSR - optimization failed for ");
-      function->PrintName();
-      PrintF("]\n");
-    }
-  }
-  return BailoutId::None();
-}
-
-
-BailoutId Compiler::CompileForConcurrentOSR(Handle<JSFunction> function) {
-  Isolate* isolate = function->GetIsolate();
-  Handle<Code> unoptimized(function->shared()->code(), isolate);
-
-  uint32_t pc_offset = CurrentPcOffset(isolate, function, unoptimized);
-
-  if (isolate->optimizing_compiler_thread()->
-          IsQueuedForOSR(function, pc_offset)) {
-    // Still waiting for the optimizing compiler thread to finish.  Carry on.
-    if (FLAG_trace_osr) {
-      PrintF("[COSR - polling recompile tasks for ");
-      function->PrintName();
-      PrintF("]\n");
-    }
-    return BailoutId::None();
-  }
-
-  OptimizingCompiler* compiler = isolate->optimizing_compiler_thread()->
-                                     FindReadyOSRCandidate(function, pc_offset);
-
-  if (compiler != NULL) {
-    if (FLAG_trace_osr) {
-      PrintF("[COSR - optimization complete for ");
-      function->PrintName();
-      PrintF(", restoring interrupt calls]\n");
-    }
-    Deoptimizer::RevertInterruptCode(isolate, *unoptimized);
-
-    BailoutId ast_id = compiler->info()->osr_ast_id();
-
-    bool succeeded = InstallOptimizedCode(compiler);
-
-    isolate->optimizing_compiler_thread()->RemoveStaleOSRCandidates();
-
-    if (!succeeded) {
-      if (FLAG_trace_osr) {
-        PrintF("[COSR - optimization failed for ");
-        function->PrintName();
-        PrintF("]\n");
-      }
-      return BailoutId::None();
-    }
-
-    DeoptimizationInputData* data = DeoptimizationInputData::cast(
-        function->code()->deoptimization_data());
-
-    if (data->OsrPcOffset()->value() >= 0) {
-      ASSERT(BailoutId(data->OsrAstId()->value()) == ast_id);
-      if (FLAG_trace_osr) {
-        PrintF("[COSR - entry at AST id %d, offset %d in optimized code]\n",
-               ast_id.ToInt(), data->OsrPcOffset()->value());
-      }
-      return ast_id;
-    }
-    return BailoutId::None();
-  }
-
-  if (!IsSuitableForOnStackReplacement(isolate, function, unoptimized)) {
-    if (FLAG_trace_osr) {
-      PrintF("[COSR - ");
-      function->PrintName();
-      PrintF(" is unsuitable, restoring interrupt calls]\n");
-    }
-    Deoptimizer::RevertInterruptCode(isolate, *unoptimized);
-    return BailoutId::None();
-  }
-
-  if (!RecompileConcurrent(function, pc_offset)) {
-    Deoptimizer::RevertInterruptCode(isolate, *unoptimized);
-  }
-  return BailoutId::None();
+  ASSERT(!info->closure()->IsInRecompileQueue());
+  return (status == RecompileJob::SUCCEEDED) ? info->code()
+                                             : Handle<Code>::null();
 }
 
 

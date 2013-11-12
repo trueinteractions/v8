@@ -88,10 +88,9 @@ namespace internal {
   F(LazyCompile, 1, 1) \
   F(LazyRecompile, 1, 1) \
   F(ConcurrentRecompile, 1, 1) \
-  F(InstallRecompiledCode, 1, 1) \
+  F(TryInstallRecompiledCode, 1, 1) \
   F(NotifyDeoptimized, 1, 1) \
   F(NotifyStubFailure, 0, 1) \
-  F(NotifyOSR, 0, 1) \
   F(DeoptimizeFunction, 1, 1) \
   F(ClearFunctionTypeFeedback, 1, 1) \
   F(RunningInSimulator, 0, 1) \
@@ -100,7 +99,8 @@ namespace internal {
   F(NeverOptimizeFunction, 1, 1) \
   F(GetOptimizationStatus, -1, 1) \
   F(GetOptimizationCount, 1, 1) \
-  F(CompileForOnStackReplacement, 1, 1) \
+  F(UnblockConcurrentRecompilation, 0, 1) \
+  F(CompileForOnStackReplacement, 2, 1) \
   F(SetAllocationTimeout, 2, 1) \
   F(AllocateInNewSpace, 1, 1) \
   F(AllocateInOldPointerSpace, 1, 1) \
@@ -299,9 +299,7 @@ namespace internal {
   /* Literals */ \
   F(MaterializeRegExpLiteral, 4, 1)\
   F(CreateObjectLiteral, 4, 1) \
-  F(CreateObjectLiteralShallow, 4, 1) \
   F(CreateArrayLiteral, 3, 1) \
-  F(CreateArrayLiteralShallow, 3, 1) \
   \
   /* Harmony generators */ \
   F(CreateJSGeneratorObject, 0, 1) \
@@ -358,11 +356,13 @@ namespace internal {
   F(GetObservationState, 0, 1) \
   F(ObservationWeakMapCreate, 0, 1) \
   F(UnwrapGlobalProxy, 1, 1) \
+  F(IsAccessAllowedForObserver, 3, 1) \
   \
   /* Harmony typed arrays */ \
   F(ArrayBufferInitialize, 2, 1)\
   F(ArrayBufferGetByteLength, 1, 1)\
   F(ArrayBufferSliceImpl, 3, 1) \
+  F(ArrayBufferIsView, 1, 1) \
   \
   F(TypedArrayInitialize, 5, 1) \
   F(TypedArrayInitializeFromArrayLike, 4, 1) \
@@ -469,7 +469,8 @@ namespace internal {
   F(HasExternalDoubleElements, 1, 1) \
   F(HasFastProperties, 1, 1) \
   F(TransitionElementsKind, 2, 1) \
-  F(HaveSameMap, 2, 1)
+  F(HaveSameMap, 2, 1) \
+  F(IsAccessCheckNeeded, 1, 1)
 
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
@@ -504,7 +505,7 @@ namespace internal {
   F(ClearBreakPoint, 1, 1) \
   F(ChangeBreakOnException, 2, 1) \
   F(IsBreakOnException, 1, 1) \
-  F(PrepareStep, 3, 1) \
+  F(PrepareStep, 4, 1) \
   F(ClearStepping, 0, 1) \
   F(DebugEvaluate, 6, 1) \
   F(DebugEvaluateGlobal, 4, 1) \
@@ -775,7 +776,7 @@ class Runtime : public AllStatic {
       Handle<Object> object,
       uint32_t index);
 
-  MUST_USE_RESULT static MaybeObject* SetObjectProperty(
+  static Handle<Object> SetObjectProperty(
       Isolate* isolate,
       Handle<Object> object,
       Handle<Object> key,
@@ -783,15 +784,7 @@ class Runtime : public AllStatic {
       PropertyAttributes attr,
       StrictModeFlag strict_mode);
 
-  MUST_USE_RESULT static MaybeObject* SetObjectPropertyOrFail(
-      Isolate* isolate,
-      Handle<Object> object,
-      Handle<Object> key,
-      Handle<Object> value,
-      PropertyAttributes attr,
-      StrictModeFlag strict_mode);
-
-  MUST_USE_RESULT static MaybeObject* ForceSetObjectProperty(
+  static Handle<Object> ForceSetObjectProperty(
       Isolate* isolate,
       Handle<JSObject> object,
       Handle<Object> key,
@@ -836,7 +829,7 @@ class Runtime : public AllStatic {
       JSArrayBuffer* phantom_array_buffer);
 
   // Helper functions used stubs.
-  static void PerformGC(Object* result);
+  static void PerformGC(Object* result, Isolate* isolate);
 
   // Used in runtime.cc and hydrogen's VisitArrayLiteral.
   static Handle<Object> CreateArrayLiteralBoilerplate(

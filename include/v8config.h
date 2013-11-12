@@ -245,6 +245,7 @@
 // older compilers.
 # define V8_HAS_ATTRIBUTE_ALWAYS_INLINE (V8_GNUC_PREREQ(4, 4, 0))
 # define V8_HAS_ATTRIBUTE_DEPRECATED (V8_GNUC_PREREQ(3, 4, 0))
+# define V8_HAS_ATTRIBUTE_DEPRECATED_MESSAGE (V8_GNUC_PREREQ(4, 5, 0))
 # define V8_HAS_ATTRIBUTE_NOINLINE (V8_GNUC_PREREQ(3, 4, 0))
 # define V8_HAS_ATTRIBUTE_VISIBILITY (V8_GNUC_PREREQ(4, 3, 0))
 # define V8_HAS_ATTRIBUTE_WARN_UNUSED_RESULT \
@@ -295,33 +296,41 @@
 // Helper macros
 
 // A macro used to make better inlining. Don't bother for debug builds.
+// Use like:
+//   V8_INLINE int GetZero() { return 0; }
 #if !defined(DEBUG) && V8_HAS_ATTRIBUTE_ALWAYS_INLINE
-# define V8_INLINE(declarator) inline __attribute__((always_inline)) declarator
+# define V8_INLINE inline __attribute__((always_inline))
 #elif !defined(DEBUG) && V8_HAS___FORCEINLINE
-# define V8_INLINE(declarator) __forceinline declarator
+# define V8_INLINE __forceinline
 #else
-# define V8_INLINE(declarator) inline declarator
+# define V8_INLINE inline
 #endif
 
 
 // A macro used to tell the compiler to never inline a particular function.
 // Don't bother for debug builds.
+// Use like:
+//   V8_NOINLINE int GetMinusOne() { return -1; }
 #if !defined(DEBUG) && V8_HAS_ATTRIBUTE_NOINLINE
-# define V8_NOINLINE(declarator) __attribute__((noinline)) declarator
+# define V8_NOINLINE __attribute__((noinline))
 #elif !defined(DEBUG) && V8_HAS_DECLSPEC_NOINLINE
-# define V8_NOINLINE(declarator) __declspec(noinline) declarator
+# define V8_NOINLINE __declspec(noinline)
 #else
-# define V8_NOINLINE(declarator) declarator
+# define V8_NOINLINE /* NOT SUPPORTED */
 #endif
 
 
 // A macro to mark classes or functions as deprecated.
-#if !V8_DISABLE_DEPRECATIONS && V8_HAS_ATTRIBUTE_DEPRECATED
-# define V8_DEPRECATED(declarator) declarator __attribute__((deprecated))
-#elif !V8_DISABLE_DEPRECATIONS && V8_HAS_DECLSPEC_DEPRECATED
-# define V8_DEPRECATED(declarator) __declspec(deprecated) declarator
+#if defined(V8_DEPRECATION_WARNINGS) && V8_HAS_ATTRIBUTE_DEPRECATED_MESSAGE
+# define V8_DEPRECATED(message, declarator) \
+declarator __attribute__((deprecated(message)))
+#elif defined(V8_DEPRECATION_WARNINGS) && V8_HAS_ATTRIBUTE_DEPRECATED
+# define V8_DEPRECATED(message, declarator) \
+declarator __attribute__((deprecated))
+#elif defined(V8_DEPRECATION_WARNINGS) && V8_HAS_DECLSPEC_DEPRECATED
+# define V8_DEPRECATED(message, declarator) __declspec(deprecated) declarator
 #else
-# define V8_DEPRECATED(declarator) declarator
+# define V8_DEPRECATED(message, declarator) declarator
 #endif
 
 

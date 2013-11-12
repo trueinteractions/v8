@@ -49,6 +49,7 @@
 #endif  // !V8_SHARED
 
 #ifdef V8_SHARED
+#include "../include/v8-defaults.h"
 #include "../include/v8-testing.h"
 #endif  // V8_SHARED
 
@@ -66,6 +67,7 @@
 #include "natives.h"
 #include "platform.h"
 #include "v8.h"
+#include "v8-defaults.h"
 #endif  // V8_SHARED
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -158,6 +160,7 @@ i::OS::MemoryMappedFile* Shell::counters_file_ = NULL;
 CounterCollection Shell::local_counters_;
 CounterCollection* Shell::counters_ = &local_counters_;
 i::Mutex Shell::context_mutex_;
+const i::TimeTicks Shell::kInitialTicks = i::TimeTicks::HighResolutionNow();
 Persistent<Context> Shell::utility_context_;
 #endif  // V8_SHARED
 
@@ -263,7 +266,8 @@ PerIsolateData::RealmScope::RealmScope(PerIsolateData* data) : data_(data) {
   data_->realm_current_ = 0;
   data_->realm_switch_ = 0;
   data_->realms_ = new Persistent<Context>[1];
-  data_->realms_[0].Reset(data_->isolate_, Context::GetEntered());
+  data_->realms_[0].Reset(data_->isolate_,
+                          data_->isolate_->GetEnteredContext());
   data_->realm_shared_.Clear();
 }
 
@@ -286,11 +290,20 @@ int PerIsolateData::RealmFind(Handle<Context> context) {
 }
 
 
+#ifndef V8_SHARED
+// performance.now() returns a time stamp as double, measured in milliseconds.
+void Shell::PerformanceNow(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  i::TimeDelta delta = i::TimeTicks::HighResolutionNow() - kInitialTicks;
+  args.GetReturnValue().Set(delta.InMillisecondsF());
+}
+#endif  // V8_SHARED
+
+
 // Realm.current() returns the index of the currently active realm.
 void Shell::RealmCurrent(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
   PerIsolateData* data = PerIsolateData::Get(isolate);
-  int index = data->RealmFind(Context::GetEntered());
+  int index = data->RealmFind(isolate->GetEnteredContext());
   if (index == -1) return;
   args.GetReturnValue().Set(index);
 }
@@ -772,7 +785,8 @@ void Shell::InstallUtilityScript(Isolate* isolate) {
       = i::Handle<i::JSObject>(debug->debug_context()->global_object());
   utility_context->Global()->Set(String::New("$debug"),
                                   Utils::ToLocal(js_debug));
-  debug->debug_context()->set_security_token(HEAP->undefined_value());
+  debug->debug_context()->set_security_token(
+      reinterpret_cast<i::Isolate*>(isolate)->heap()->undefined_value());
 #endif  // ENABLE_DEBUGGER_SUPPORT
 
   // Run the d8 shell utility script in the utility context
@@ -868,6 +882,13 @@ Handle<ObjectTemplate> Shell::CreateGlobalTemplate(Isolate* isolate) {
                               RealmSharedGet, RealmSharedSet);
   global_template->Set(String::New("Realm"), realm_template);
 
+#ifndef V8_SHARED
+  Handle<ObjectTemplate> performance_template = ObjectTemplate::New();
+  performance_template->Set(String::New("now"),
+                            FunctionTemplate::New(PerformanceNow));
+  global_template->Set(String::New("performance"), performance_template);
+#endif  // V8_SHARED
+
 #if !defined(V8_SHARED) && !defined(_WIN32) && !defined(_WIN64)
   Handle<ObjectTemplate> os_templ = ObjectTemplate::New();
   AddOSMethods(os_templ);
@@ -938,8 +959,8 @@ Local<Context> Shell::CreateEvaluationContext(Isolate* isolate) {
   i::Factory* factory = reinterpret_cast<i::Isolate*>(isolate)->factory();
   i::JSArguments js_args = i::FLAG_js_arguments;
   i::Handle<i::FixedArray> arguments_array =
-      factory->NewFixedArray(js_args.argc());
-  for (int j = 0; j < js_args.argc(); j++) {
+      factory->NewFixedArray(js_args.argc);
+  for (int j = 0; j < js_args.argc; j++) {
     i::Handle<i::String> arg =
         factory->NewStringFromUtf8(i::CStrVector(js_args[j]));
     arguments_array->set(j, *arg);
@@ -1227,6 +1248,7 @@ SourceGroup::~SourceGroup() {
 
 
 void SourceGroup::Execute(Isolate* isolate) {
+  bool exception_was_thrown = false;
   for (int i = begin_offset_; i < end_offset_; ++i) {
     const char* arg = argv_[i];
     if (strcmp(arg, "-e") == 0 && i + 1 < end_offset_) {
@@ -1235,7 +1257,8 @@ void SourceGroup::Execute(Isolate* isolate) {
       Handle<String> file_name = String::New("unnamed");
       Handle<String> source = String::New(argv_[i + 1]);
       if (!Shell::ExecuteString(isolate, source, file_name, false, true)) {
-        Shell::Exit(1);
+        exception_was_thrown = true;
+        break;
       }
       ++i;
     } else if (arg[0] == '-') {
@@ -1250,9 +1273,13 @@ void SourceGroup::Execute(Isolate* isolate) {
         Shell::Exit(1);
       }
       if (!Shell::ExecuteString(isolate, source, file_name, false, true)) {
-        Shell::Exit(1);
+        exception_was_thrown = true;
+        break;
       }
     }
+  }
+  if (exception_was_thrown != Shell::options.expected_to_throw) {
+    Shell::Exit(1);
   }
 }
 
@@ -1409,6 +1436,9 @@ bool Shell::SetOptions(int argc, char* argv[]) {
       options.dump_heap_constants = true;
       argv[i] = NULL;
 #endif
+    } else if (strcmp(argv[i], "--throws") == 0) {
+      options.expected_to_throw = true;
+      argv[i] = NULL;
     }
 #ifdef V8_SHARED
     else if (strcmp(argv[i], "--dump-counters") == 0) {
@@ -1524,7 +1554,7 @@ int Shell::RunMain(Isolate* isolate, int argc, char* argv[]) {
     // Start preemption if threads have been created and preemption is enabled.
     if (threads.length() > 0
         && options.use_preemption) {
-      Locker::StartPreemption(options.preemption_interval);
+      Locker::StartPreemption(isolate, options.preemption_interval);
     }
 #endif  // V8_SHARED
   }
@@ -1542,7 +1572,7 @@ int Shell::RunMain(Isolate* isolate, int argc, char* argv[]) {
 
   if (threads.length() > 0 && options.use_preemption) {
     Locker lock(isolate);
-    Locker::StopPreemption();
+    Locker::StopPreemption(isolate);
   }
 #endif  // V8_SHARED
   return 0;
@@ -1555,6 +1585,7 @@ static void SetStandaloneFlagsViaCommandLine() {
   char **fake_argv = new char*[2];
   fake_argv[0] = NULL;
   fake_argv[1] = strdup("--trace-hydrogen-file=hydrogen.cfg");
+  fake_argv[2] = strdup("--redirect-code-traces-to=code.asm");
   v8::V8::SetFlagsFromCommandLine(&fake_argc, fake_argv, false);
   free(fake_argv[1]);
   delete[] fake_argv;
@@ -1644,9 +1675,11 @@ int Shell::Main(int argc, char* argv[]) {
   v8::V8::InitializeICU();
 #ifndef V8_SHARED
   i::FLAG_trace_hydrogen_file = "hydrogen.cfg";
+  i::FLAG_redirect_code_traces_to = "code.asm";
 #else
   SetStandaloneFlagsViaCommandLine();
 #endif
+  v8::SetDefaultResourceConstraintsForCurrentPlatform();
   ShellArrayBufferAllocator array_buffer_allocator;
   v8::V8::SetArrayBufferAllocator(&array_buffer_allocator);
   int result = 0;

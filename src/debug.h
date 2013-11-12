@@ -38,6 +38,7 @@
 #include "frames-inl.h"
 #include "hashmap.h"
 #include "platform.h"
+#include "platform/socket.h"
 #include "string-stream.h"
 #include "v8threads.h"
 
@@ -261,7 +262,9 @@ class Debug {
   void FloodHandlerWithOneShot();
   void ChangeBreakOnException(ExceptionBreakType type, bool enable);
   bool IsBreakOnException(ExceptionBreakType type);
-  void PrepareStep(StepAction step_action, int step_count);
+  void PrepareStep(StepAction step_action,
+                   int step_count,
+                   StackFrame::Id frame_id);
   void ClearStepping();
   void ClearStepOut();
   bool IsStepping() { return thread_local_.step_count_ > 0; }
@@ -666,6 +669,7 @@ class MessageImpl: public v8::Debug::Message {
   virtual v8::Handle<v8::String> GetJSON() const;
   virtual v8::Handle<v8::Context> GetEventContext() const;
   virtual v8::Debug::ClientData* GetClientData() const;
+  virtual v8::Isolate* GetIsolate() const;
 
  private:
   MessageImpl(bool is_event,

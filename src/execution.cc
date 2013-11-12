@@ -459,6 +459,22 @@ void StackGuard::RequestGC() {
 }
 
 
+bool StackGuard::IsInstallCodeRequest() {
+  ExecutionAccess access(isolate_);
+  return (thread_local_.interrupt_flags_ & INSTALL_CODE) != 0;
+}
+
+
+void StackGuard::RequestInstallCode() {
+  ExecutionAccess access(isolate_);
+  thread_local_.interrupt_flags_ |= INSTALL_CODE;
+  if (thread_local_.postpone_interrupts_nesting_ == 0) {
+    thread_local_.jslimit_ = thread_local_.climit_ = kInterruptLimit;
+    isolate_->heap()->SetStackLimits();
+  }
+}
+
+
 bool StackGuard::IsFullDeopt() {
   ExecutionAccess access(isolate_);
   return (thread_local_.interrupt_flags_ & FULL_DEOPT) != 0;
@@ -705,12 +721,14 @@ Handle<JSFunction> Execution::InstantiateFunction(
     Handle<FunctionTemplateInfo> data,
     bool* exc) {
   Isolate* isolate = data->GetIsolate();
-  // Fast case: see if the function has already been instantiated
-  int serial_number = Smi::cast(data->serial_number())->value();
-  Object* elm =
-      isolate->native_context()->function_cache()->
-          GetElementNoExceptionThrown(isolate, serial_number);
-  if (elm->IsJSFunction()) return Handle<JSFunction>(JSFunction::cast(elm));
+  if (!data->do_not_cache()) {
+    // Fast case: see if the function has already been instantiated
+    int serial_number = Smi::cast(data->serial_number())->value();
+    Object* elm =
+        isolate->native_context()->function_cache()->
+            GetElementNoExceptionThrown(isolate, serial_number);
+    if (elm->IsJSFunction()) return Handle<JSFunction>(JSFunction::cast(elm));
+  }
   // The function has not yet been instantiated in this context; do it.
   Handle<Object> args[] = { data };
   Handle<Object> result = Call(isolate,
@@ -914,7 +932,6 @@ MaybeObject* Execution::HandleStackGuardInterrupt(Isolate* isolate) {
 
   isolate->counters()->stack_interrupts()->Increment();
   isolate->counters()->runtime_profiler_ticks()->Increment();
-  isolate->runtime_profiler()->OptimizeNow();
 #ifdef ENABLE_DEBUGGER_SUPPORT
   if (stack_guard->IsDebugBreak() || stack_guard->IsDebugCommand()) {
     DebugBreakHelper(isolate);
@@ -933,6 +950,12 @@ MaybeObject* Execution::HandleStackGuardInterrupt(Isolate* isolate) {
     stack_guard->Continue(FULL_DEOPT);
     Deoptimizer::DeoptimizeAll(isolate);
   }
+  if (stack_guard->IsInstallCodeRequest()) {
+    ASSERT(FLAG_concurrent_recompilation);
+    stack_guard->Continue(INSTALL_CODE);
+    isolate->optimizing_compiler_thread()->InstallOptimizedFunctions();
+  }
+  isolate->runtime_profiler()->OptimizeNow();
   return isolate->heap()->undefined_value();
 }
 

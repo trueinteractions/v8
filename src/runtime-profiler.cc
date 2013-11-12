@@ -33,7 +33,6 @@
 #include "bootstrapper.h"
 #include "code-stubs.h"
 #include "compilation-cache.h"
-#include "deoptimizer.h"
 #include "execution.h"
 #include "full-codegen.h"
 #include "global-handles.h"
@@ -139,8 +138,16 @@ void RuntimeProfiler::Optimize(JSFunction* function, const char* reason) {
     PrintF("]\n");
   }
 
+
   if (FLAG_concurrent_recompilation && !isolate_->bootstrapper()->IsActive()) {
-    ASSERT(!function->IsMarkedForInstallingRecompiledCode());
+    if (FLAG_concurrent_osr &&
+        isolate_->optimizing_compiler_thread()->IsQueuedForOSR(function)) {
+      // Do not attempt regular recompilation if we already queued this for OSR.
+      // TODO(yangguo): This is necessary so that we don't install optimized
+      // code on a function that is already optimized, since OSR and regular
+      // recompilation race.  This goes away as soon as OSR becomes one-shot.
+      return;
+    }
     ASSERT(!function->IsInRecompileQueue());
     function->MarkForConcurrentRecompilation();
   } else {
@@ -177,7 +184,7 @@ void RuntimeProfiler::AttemptOnStackReplacement(JSFunction* function) {
     PrintF("]\n");
   }
 
-  Deoptimizer::PatchInterruptCode(isolate_, shared->code());
+  BackEdgeTable::Patch(isolate_, shared->code());
 }
 
 
@@ -218,11 +225,7 @@ void RuntimeProfiler::OptimizeNow() {
 
   if (isolate_->DebuggerHasBreakPoints()) return;
 
-  if (FLAG_concurrent_recompilation) {
-    // Take this as opportunity to process the optimizing compiler thread's
-    // output queue so that it does not unnecessarily keep objects alive.
-    isolate_->optimizing_compiler_thread()->InstallOptimizedFunctions();
-  }
+  DisallowHeapAllocation no_gc;
 
   // Run through the JavaScript frames and collect them. If we already
   // have a sample of the function, we mark it for optimizations

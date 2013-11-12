@@ -51,7 +51,6 @@
 
 #include "v8.h"
 
-#include "platform-posix.h"
 #include "platform.h"
 #include "v8threads.h"
 #include "vm-state-inl.h"
@@ -104,16 +103,11 @@ void* OS::Allocate(const size_t requested,
   void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
 
   if (mbase == MAP_FAILED) {
-    LOG(ISOLATE, StringEvent("OS::Allocate", "mmap failed"));
+    LOG(Isolate::Current(), StringEvent("OS::Allocate", "mmap failed"));
     return NULL;
   }
   *allocated = msize;
   return mbase;
-}
-
-
-void OS::DumpBacktrace() {
-  // Currently unsupported.
 }
 
 
@@ -165,7 +159,7 @@ PosixMemoryMappedFile::~PosixMemoryMappedFile() {
 }
 
 
-void OS::LogSharedLibraryAddresses() {
+void OS::LogSharedLibraryAddresses(Isolate* isolate) {
 }
 
 
@@ -208,20 +202,6 @@ static int StackWalkCallback(uintptr_t pc, int signo, void* data) {
   }
   walker->index++;
   return 0;
-}
-
-
-int OS::StackWalk(Vector<OS::StackFrame> frames) {
-  ucontext_t ctx;
-  struct StackWalker walker = { frames, 0 };
-
-  if (getcontext(&ctx) < 0) return kStackWalkError;
-
-  if (!walkcontext(&ctx, StackWalkCallback, &walker)) {
-    return kStackWalkError;
-  }
-
-  return walker.index;
 }
 
 
@@ -360,17 +340,5 @@ bool VirtualMemory::HasLazyCommits() {
   // TODO(alph): implement for the platform.
   return false;
 }
-
-
-void OS::SetUp() {
-  // Seed the random number generator.
-  // Convert the current time to a 64-bit integer first, before converting it
-  // to an unsigned. Going directly will cause an overflow and the seed to be
-  // set to all ones. The seed will be identical for different instances that
-  // call this setup code within the same millisecond.
-  uint64_t seed = static_cast<uint64_t>(TimeCurrentMillis());
-  srandom(static_cast<unsigned int>(seed));
-}
-
 
 } }  // namespace v8::internal

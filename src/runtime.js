@@ -361,7 +361,7 @@ function IN(x) {
 function INSTANCE_OF(F) {
   var V = this;
   if (!IS_SPEC_FUNCTION(F)) {
-    throw %MakeTypeError('instanceof_function_expected', [V]);
+    throw %MakeTypeError('instanceof_function_expected', [F]);
   }
 
   // If V is not an object, return false.
@@ -526,8 +526,8 @@ function ToNumber(x) {
                                     : %StringToNumber(x);
   }
   if (IS_BOOLEAN(x)) return x ? 1 : 0;
-  if (IS_UNDEFINED(x)) return $NaN;
-  if (IS_SYMBOL(x)) return $NaN;
+  if (IS_UNDEFINED(x)) return NAN;
+  if (IS_SYMBOL(x)) return NAN;
   return (IS_NULL(x)) ? 0 : ToNumber(%DefaultNumber(x));
 }
 
@@ -537,8 +537,8 @@ function NonNumberToNumber(x) {
                                     : %StringToNumber(x);
   }
   if (IS_BOOLEAN(x)) return x ? 1 : 0;
-  if (IS_UNDEFINED(x)) return $NaN;
-  if (IS_SYMBOL(x)) return $NaN;
+  if (IS_UNDEFINED(x)) return NAN;
+  if (IS_SYMBOL(x)) return NAN;
   return (IS_NULL(x)) ? 0 : ToNumber(%DefaultNumber(x));
 }
 

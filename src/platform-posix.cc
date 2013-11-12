@@ -29,8 +29,6 @@
 // own but contains the parts which are the same across POSIX platforms Linux,
 // Mac OS, FreeBSD and OpenBSD.
 
-#include "platform-posix.h"
-
 #include <dlfcn.h>
 #include <pthread.h>
 #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
@@ -69,6 +67,7 @@
 #include "v8.h"
 
 #include "codegen.h"
+#include "isolate-inl.h"
 #include "platform.h"
 
 namespace v8 {
@@ -98,6 +97,48 @@ intptr_t OS::MaxVirtualMemory() {
   int result = getrlimit(RLIMIT_DATA, &limit);
   if (result != 0) return 0;
   return limit.rlim_cur;
+}
+
+
+uint64_t OS::TotalPhysicalMemory() {
+#if V8_OS_MACOSX
+  int mib[2];
+  mib[0] = CTL_HW;
+  mib[1] = HW_MEMSIZE;
+  int64_t size = 0;
+  size_t len = sizeof(size);
+  if (sysctl(mib, 2, &size, &len, NULL, 0) != 0) {
+    UNREACHABLE();
+    return 0;
+  }
+  return static_cast<uint64_t>(size);
+#elif V8_OS_FREEBSD
+  int pages, page_size;
+  size_t size = sizeof(pages);
+  sysctlbyname("vm.stats.vm.v_page_count", &pages, &size, NULL, 0);
+  sysctlbyname("vm.stats.vm.v_page_size", &page_size, &size, NULL, 0);
+  if (pages == -1 || page_size == -1) {
+    UNREACHABLE();
+    return 0;
+  }
+  return static_cast<uint64_t>(pages) * page_size;
+#elif V8_OS_CYGWIN
+  MEMORYSTATUS memory_info;
+  memory_info.dwLength = sizeof(memory_info);
+  if (!GlobalMemoryStatus(&memory_info)) {
+    UNREACHABLE();
+    return 0;
+  }
+  return static_cast<uint64_t>(memory_info.dwTotalPhys);
+#else
+  intptr_t pages = sysconf(_SC_PHYS_PAGES);
+  intptr_t page_size = sysconf(_SC_PAGESIZE);
+  if (pages == -1 || page_size == -1) {
+    UNREACHABLE();
+    return 0;
+  }
+  return static_cast<uint64_t>(pages) * page_size;
+#endif
 }
 
 
@@ -152,7 +193,7 @@ void OS::ProtectCode(void* address, const size_t size) {
 void OS::Guard(void* address, const size_t size) {
 #if defined(__CYGWIN__)
   DWORD oldprotect;
-  VirtualProtect(address, size, PAGE_READONLY | PAGE_GUARD, &oldprotect);
+  VirtualProtect(address, size, PAGE_NOACCESS, &oldprotect);
 #else
   mprotect(address, size, PROT_NONE);
 #endif
@@ -171,17 +212,14 @@ void* OS::GetRandomMmapAddr() {
   // CpuFeatures::Probe. We don't care about randomization in this case because
   // the code page is immediately freed.
   if (isolate != NULL) {
+    uintptr_t raw_addr;
+    isolate->random_number_generator()->NextBytes(&raw_addr, sizeof(raw_addr));
 #if V8_TARGET_ARCH_X64
-    uint64_t rnd1 = V8::RandomPrivate(isolate);
-    uint64_t rnd2 = V8::RandomPrivate(isolate);
-    uint64_t raw_addr = (rnd1 << 32) ^ rnd2;
     // Currently available CPUs have 48 bits of virtual addressing.  Truncate
     // the hint address to 46 bits to give the kernel a fighting chance of
     // fulfilling our placement request.
     raw_addr &= V8_UINT64_C(0x3ffffffff000);
 #else
-    uint32_t raw_addr = V8::RandomPrivate(isolate);
-
     raw_addr &= 0x3ffff000;
 
 # ifdef __sun
@@ -526,6 +564,9 @@ Thread::Thread(const Options& options)
     : data_(new PlatformData),
       stack_size_(options.stack_size()),
       start_semaphore_(NULL) {
+  if (stack_size_ > 0 && stack_size_ < PTHREAD_STACK_MIN) {
+    stack_size_ = PTHREAD_STACK_MIN;
+  }
   set_name(options.name());
 }
 

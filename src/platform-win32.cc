@@ -43,6 +43,7 @@
 #include "v8.h"
 
 #include "codegen.h"
+#include "isolate-inl.h"
 #include "platform.h"
 #include "simulator.h"
 #include "vm-state-inl.h"
@@ -123,13 +124,6 @@ int strncpy_s(char* dest, size_t dest_size, const char* source, size_t count) {
 }
 
 #endif  // __MINGW32__
-
-// Generate a pseudo-random number in the range 0-2^31-1. Usually
-// defined in stdlib.h. Missing in both Microsoft Visual Studio C++ and MinGW.
-int random() {
-  return rand();
-}
-
 
 namespace v8 {
 namespace internal {
@@ -246,11 +240,15 @@ void MathSetup() {
 class Win32Time {
  public:
   // Constructors.
+  Win32Time();
   explicit Win32Time(double jstime);
   Win32Time(int year, int mon, int day, int hour, int min, int sec);
 
   // Convert timestamp to JavaScript representation.
   double ToJSTime();
+
+  // Set timestamp to current time.
+  void SetToCurrentTime();
 
   // Returns the local timezone offset in milliseconds east of UTC. This is
   // the number of milliseconds you must add to UTC to get local time, i.e.
@@ -320,6 +318,12 @@ char Win32Time::std_tz_name_[kTzNameSize];
 char Win32Time::dst_tz_name_[kTzNameSize];
 
 
+// Initialize timestamp to start of epoc.
+Win32Time::Win32Time() {
+  t() = 0;
+}
+
+
 // Initialize timestamp from a JavaScript timestamp.
 Win32Time::Win32Time(double jstime) {
   t() = static_cast<int64_t>(jstime) * kTimeScaler + kTimeEpoc;
@@ -343,6 +347,62 @@ Win32Time::Win32Time(int year, int mon, int day, int hour, int min, int sec) {
 // Convert timestamp to JavaScript timestamp.
 double Win32Time::ToJSTime() {
   return static_cast<double>((t() - kTimeEpoc) / kTimeScaler);
+}
+
+
+// Set timestamp to current time.
+void Win32Time::SetToCurrentTime() {
+  // The default GetSystemTimeAsFileTime has a ~15.5ms resolution.
+  // Because we're fast, we like fast timers which have at least a
+  // 1ms resolution.
+  //
+  // timeGetTime() provides 1ms granularity when combined with
+  // timeBeginPeriod().  If the host application for v8 wants fast
+  // timers, it can use timeBeginPeriod to increase the resolution.
+  //
+  // Using timeGetTime() has a drawback because it is a 32bit value
+  // and hence rolls-over every ~49days.
+  //
+  // To use the clock, we use GetSystemTimeAsFileTime as our base;
+  // and then use timeGetTime to extrapolate current time from the
+  // start time.  To deal with rollovers, we resync the clock
+  // any time when more than kMaxClockElapsedTime has passed or
+  // whenever timeGetTime creates a rollover.
+
+  static bool initialized = false;
+  static TimeStamp init_time;
+  static DWORD init_ticks;
+  static const int64_t kHundredNanosecondsPerSecond = 10000000;
+  static const int64_t kMaxClockElapsedTime =
+      60*kHundredNanosecondsPerSecond;  // 1 minute
+
+  // If we are uninitialized, we need to resync the clock.
+  bool needs_resync = !initialized;
+
+  // Get the current time.
+  TimeStamp time_now;
+  GetSystemTimeAsFileTime(&time_now.ft_);
+  DWORD ticks_now = timeGetTime();
+
+  // Check if we need to resync due to clock rollover.
+  needs_resync |= ticks_now < init_ticks;
+
+  // Check if we need to resync due to elapsed time.
+  needs_resync |= (time_now.t_ - init_time.t_) > kMaxClockElapsedTime;
+
+  // Check if we need to resync due to backwards time change.
+  needs_resync |= time_now.t_ < init_time.t_;
+
+  // Resync the clock if necessary.
+  if (needs_resync) {
+    GetSystemTimeAsFileTime(&init_time.ft_);
+    init_ticks = ticks_now = timeGetTime();
+    initialized = true;
+  }
+
+  // Finally, compute the actual time.  Why is this so hard.
+  DWORD elapsed = ticks_now - init_ticks;
+  this->time_.t_ = init_time.t_ + (static_cast<int64_t>(elapsed) * 10000);
 }
 
 
@@ -794,8 +854,9 @@ void* OS::GetRandomMmapAddr() {
     static const intptr_t kAllocationRandomAddressMin = 0x04000000;
     static const intptr_t kAllocationRandomAddressMax = 0x3FFF0000;
 #endif
-    uintptr_t address = (V8::RandomPrivate(isolate) << kPageSizeBits)
-        | kAllocationRandomAddressMin;
+    uintptr_t address =
+        (isolate->random_number_generator()->NextInt() << kPageSizeBits) |
+        kAllocationRandomAddressMin;
     address &= kAllocationRandomAddressMax;
     return reinterpret_cast<void *>(address);
   }
@@ -834,7 +895,7 @@ void* OS::Allocate(const size_t requested,
                                         prot);
 
   if (mbase == NULL) {
-    LOG(ISOLATE, StringEvent("OS::Allocate", "VirtualAlloc failed"));
+    LOG(Isolate::Current(), StringEvent("OS::Allocate", "VirtualAlloc failed"));
     return NULL;
   }
 
@@ -865,7 +926,7 @@ void OS::ProtectCode(void* address, const size_t size) {
 
 void OS::Guard(void* address, const size_t size) {
   DWORD oldprotect;
-  VirtualProtect(address, size, PAGE_READONLY | PAGE_GUARD, &oldprotect);
+  VirtualProtect(address, size, PAGE_NOACCESS, &oldprotect);
 }
 
 
@@ -893,11 +954,6 @@ void OS::DebugBreak() {
 #else
   ::DebugBreak();
 #endif
-}
-
-
-void OS::DumpBacktrace() {
-  // Currently unsupported.
 }
 
 
@@ -1134,7 +1190,7 @@ TLHELP32_FUNCTION_LIST(DLL_FUNC_LOADED)
 
 
 // Load the symbols for generating stack traces.
-static bool LoadSymbols(HANDLE process_handle) {
+static bool LoadSymbols(Isolate* isolate, HANDLE process_handle) {
   static bool symbols_loaded = false;
 
   if (symbols_loaded) return true;
@@ -1183,7 +1239,7 @@ static bool LoadSymbols(HANDLE process_handle) {
       if (err != ERROR_MOD_NOT_FOUND &&
           err != ERROR_INVALID_HANDLE) return false;
     }
-    LOG(i::Isolate::Current(),
+    LOG(isolate,
         SharedLibraryEvent(
             module_entry.szExePath,
             reinterpret_cast<unsigned int>(module_entry.modBaseAddr),
@@ -1198,14 +1254,14 @@ static bool LoadSymbols(HANDLE process_handle) {
 }
 
 
-void OS::LogSharedLibraryAddresses() {
+void OS::LogSharedLibraryAddresses(Isolate* isolate) {
   // SharedLibraryEvents are logged when loading symbol information.
   // Only the shared libraries loaded at the time of the call to
   // LogSharedLibraryAddresses are logged.  DLLs loaded after
   // initialization are not accounted for.
   if (!LoadDbgHelpAndTlHelp32()) return;
   HANDLE process_handle = GetCurrentProcess();
-  LoadSymbols(process_handle);
+  LoadSymbols(isolate, process_handle);
 }
 
 
@@ -1213,133 +1269,21 @@ void OS::SignalCodeMovingGC() {
 }
 
 
-// Walk the stack using the facilities in dbghelp.dll and tlhelp32.dll
-
-// Switch off warning 4748 (/GS can not protect parameters and local variables
-// from local buffer overrun because optimizations are disabled in function) as
-// it is triggered by the use of inline assembler.
-#pragma warning(push)
-#pragma warning(disable : 4748)
-int OS::StackWalk(Vector<OS::StackFrame> frames) {
-  BOOL ok;
-
-  // Load the required functions from DLL's.
-  if (!LoadDbgHelpAndTlHelp32()) return kStackWalkError;
-
-  // Get the process and thread handles.
-  HANDLE process_handle = GetCurrentProcess();
-  HANDLE thread_handle = GetCurrentThread();
-
-  // Read the symbols.
-  if (!LoadSymbols(process_handle)) return kStackWalkError;
-
-  // Capture current context.
-  CONTEXT context;
-  RtlCaptureContext(&context);
-
-  // Initialize the stack walking
-  STACKFRAME64 stack_frame;
-  memset(&stack_frame, 0, sizeof(stack_frame));
-#ifdef  _WIN64
-  stack_frame.AddrPC.Offset = context.Rip;
-  stack_frame.AddrFrame.Offset = context.Rbp;
-  stack_frame.AddrStack.Offset = context.Rsp;
-#else
-  stack_frame.AddrPC.Offset = context.Eip;
-  stack_frame.AddrFrame.Offset = context.Ebp;
-  stack_frame.AddrStack.Offset = context.Esp;
-#endif
-  stack_frame.AddrPC.Mode = AddrModeFlat;
-  stack_frame.AddrFrame.Mode = AddrModeFlat;
-  stack_frame.AddrStack.Mode = AddrModeFlat;
-  int frames_count = 0;
-
-  // Collect stack frames.
-  int frames_size = frames.length();
-  while (frames_count < frames_size) {
-    ok = _StackWalk64(
-        IMAGE_FILE_MACHINE_I386,    // MachineType
-        process_handle,             // hProcess
-        thread_handle,              // hThread
-        &stack_frame,               // StackFrame
-        &context,                   // ContextRecord
-        NULL,                       // ReadMemoryRoutine
-        _SymFunctionTableAccess64,  // FunctionTableAccessRoutine
-        _SymGetModuleBase64,        // GetModuleBaseRoutine
-        NULL);                      // TranslateAddress
-    if (!ok) break;
-
-    // Store the address.
-    ASSERT((stack_frame.AddrPC.Offset >> 32) == 0);  // 32-bit address.
-    frames[frames_count].address =
-        reinterpret_cast<void*>(stack_frame.AddrPC.Offset);
-
-    // Try to locate a symbol for this frame.
-    DWORD64 symbol_displacement;
-    SmartArrayPointer<IMAGEHLP_SYMBOL64> symbol(
-        NewArray<IMAGEHLP_SYMBOL64>(kStackWalkMaxNameLen));
-    if (symbol.is_empty()) return kStackWalkError;  // Out of memory.
-    memset(*symbol, 0, sizeof(IMAGEHLP_SYMBOL64) + kStackWalkMaxNameLen);
-    (*symbol)->SizeOfStruct = sizeof(IMAGEHLP_SYMBOL64);
-    (*symbol)->MaxNameLength = kStackWalkMaxNameLen;
-    ok = _SymGetSymFromAddr64(process_handle,             // hProcess
-                              stack_frame.AddrPC.Offset,  // Address
-                              &symbol_displacement,       // Displacement
-                              *symbol);                   // Symbol
-    if (ok) {
-      // Try to locate more source information for the symbol.
-      IMAGEHLP_LINE64 Line;
-      memset(&Line, 0, sizeof(Line));
-      Line.SizeOfStruct = sizeof(Line);
-      DWORD line_displacement;
-      ok = _SymGetLineFromAddr64(
-          process_handle,             // hProcess
-          stack_frame.AddrPC.Offset,  // dwAddr
-          &line_displacement,         // pdwDisplacement
-          &Line);                     // Line
-      // Format a text representation of the frame based on the information
-      // available.
-      if (ok) {
-        SNPrintF(MutableCStrVector(frames[frames_count].text,
-                                   kStackWalkMaxTextLen),
-                 "%s %s:%d:%d",
-                 (*symbol)->Name, Line.FileName, Line.LineNumber,
-                 line_displacement);
-      } else {
-        SNPrintF(MutableCStrVector(frames[frames_count].text,
-                                   kStackWalkMaxTextLen),
-                 "%s",
-                 (*symbol)->Name);
-      }
-      // Make sure line termination is in place.
-      frames[frames_count].text[kStackWalkMaxTextLen - 1] = '\0';
-    } else {
-      // No text representation of this frame
-      frames[frames_count].text[0] = '\0';
-
-      // Continue if we are just missing a module (for non C/C++ frames a
-      // module will never be found).
-      int err = GetLastError();
-      if (err != ERROR_MOD_NOT_FOUND) {
-        break;
-      }
-    }
-
-    frames_count++;
+uint64_t OS::TotalPhysicalMemory() {
+  MEMORYSTATUSEX memory_info;
+  memory_info.dwLength = sizeof(memory_info);
+  if (!GlobalMemoryStatusEx(&memory_info)) {
+    UNREACHABLE();
+    return 0;
   }
 
-  // Return the number of frames filled in.
-  return frames_count;
+  return static_cast<uint64_t>(memory_info.ullTotalPhys);
 }
 
 
-// Restore warnings to previous settings.
-#pragma warning(pop)
-
 #else  // __MINGW32__
-void OS::LogSharedLibraryAddresses() { }
+void OS::LogSharedLibraryAddresses(Isolate* isolate) { }
 void OS::SignalCodeMovingGC() { }
-int OS::StackWalk(Vector<OS::StackFrame> frames) { return 0; }
 #endif  // __MINGW32__
 
 
@@ -1441,7 +1385,7 @@ bool VirtualMemory::Guard(void* address) {
   if (NULL == VirtualAlloc(address,
                            OS::CommitPageSize(),
                            MEM_COMMIT,
-                           PAGE_READONLY | PAGE_GUARD)) {
+                           PAGE_NOACCESS)) {
     return false;
   }
   return true;
@@ -1578,17 +1522,6 @@ void Thread::SetThreadLocal(LocalStorageKey key, void* value) {
 
 void Thread::YieldCPU() {
   Sleep(0);
-}
-
-
-void OS::SetUp() {
-  // Seed the random number generator.
-  // Convert the current time to a 64-bit integer first, before converting it
-  // to an unsigned. Going directly can cause an overflow and the seed to be
-  // set to all ones. The seed will be identical for different instances that
-  // call this setup code within the same millisecond.
-  uint64_t seed = static_cast<uint64_t>(TimeCurrentMillis());
-  srand(static_cast<unsigned int>(seed));
 }
 
 } }  // namespace v8::internal

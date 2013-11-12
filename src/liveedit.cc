@@ -731,8 +731,8 @@ class FunctionInfoWrapper : public JSArrayBasedStruct<FunctionInfoWrapper> {
     Handle<JSValue> scope_wrapper = WrapInJSValue(code_scope_info);
     this->SetField(kCodeScopeInfoOffset_, scope_wrapper);
   }
-  void SetOuterScopeInfo(Handle<Object> scope_info_array) {
-    this->SetField(kOuterScopeInfoOffset_, scope_info_array);
+  void SetFunctionScopeInfo(Handle<Object> scope_info_array) {
+    this->SetField(kFunctionScopeInfoOffset_, scope_info_array);
   }
   void SetSharedFunctionInfo(Handle<SharedFunctionInfo> info) {
     Handle<JSValue> info_holder = WrapInJSValue(info);
@@ -771,7 +771,7 @@ class FunctionInfoWrapper : public JSArrayBasedStruct<FunctionInfoWrapper> {
   static const int kParamNumOffset_ = 3;
   static const int kCodeOffset_ = 4;
   static const int kCodeScopeInfoOffset_ = 5;
-  static const int kOuterScopeInfoOffset_ = 6;
+  static const int kFunctionScopeInfoOffset_ = 6;
   static const int kParentIndexOffset_ = 7;
   static const int kSharedFunctionInfoOffset_ = 8;
   static const int kLiteralNumOffset_ = 9;
@@ -880,7 +880,7 @@ class FunctionInfoListener {
 
     Handle<Object> scope_info_list(SerializeFunctionScope(scope, zone),
                                    isolate());
-    info.SetOuterScopeInfo(scope_info_list);
+    info.SetFunctionScopeInfo(scope_info_list);
   }
 
   Handle<JSArray> GetResult() { return result_; }
@@ -897,14 +897,12 @@ class FunctionInfoListener {
     // Saves some description of scope. It stores name and indexes of
     // variables in the whole scope chain. Null-named slots delimit
     // scopes of this chain.
-    Scope* outer_scope = scope->outer_scope();
-    if (outer_scope == NULL) {
-      return isolate()->heap()->undefined_value();
-    }
-    do {
-      ZoneList<Variable*> stack_list(outer_scope->StackLocalCount(), zone);
-      ZoneList<Variable*> context_list(outer_scope->ContextLocalCount(), zone);
-      outer_scope->CollectStackAndContextLocals(&stack_list, &context_list);
+    Scope* current_scope = scope;
+    while (current_scope != NULL) {
+      ZoneList<Variable*> stack_list(current_scope->StackLocalCount(), zone);
+      ZoneList<Variable*> context_list(
+          current_scope->ContextLocalCount(), zone);
+      current_scope->CollectStackAndContextLocals(&stack_list, &context_list);
       context_list.Sort(&Variable::CompareIndex);
 
       for (int i = 0; i < context_list.length(); i++) {
@@ -924,8 +922,8 @@ class FunctionInfoListener {
                                          isolate()));
       scope_info_length++;
 
-      outer_scope = outer_scope->outer_scope();
-    } while (outer_scope != NULL);
+      current_scope = current_scope->outer_scope();
+    }
 
     return *scope_info_list;
   }
@@ -1233,7 +1231,9 @@ static bool IsInlined(JSFunction* function, SharedFunctionInfo* candidate) {
   DeoptimizationInputData* data =
       DeoptimizationInputData::cast(function->code()->deoptimization_data());
 
-  if (data == HEAP->empty_fixed_array()) return false;
+  if (data == function->GetIsolate()->heap()->empty_fixed_array()) {
+    return false;
+  }
 
   FixedArray* literals = data->LiteralArray();
 
@@ -1549,7 +1549,7 @@ MaybeObject* LiveEdit::PatchFunctionPositions(
   info->set_end_position(new_function_end);
   info->set_function_token_position(new_function_token_pos);
 
-  HEAP->EnsureHeapIsIterable();
+  info->GetIsolate()->heap()->EnsureHeapIsIterable();
 
   if (IsJSFunctionCode(info->code())) {
     // Patch relocation info section of the code.
@@ -1565,7 +1565,7 @@ MaybeObject* LiveEdit::PatchFunctionPositions(
     }
   }
 
-  return HEAP->undefined_value();
+  return info->GetIsolate()->heap()->undefined_value();
 }
 
 
@@ -1611,7 +1611,7 @@ Object* LiveEdit::ChangeScriptSource(Handle<Script> original_script,
   original_script->set_source(*new_source);
 
   // Drop line ends so that they will be recalculated.
-  original_script->set_line_ends(HEAP->undefined_value());
+  original_script->set_line_ends(isolate->heap()->undefined_value());
 
   return *old_script_object;
 }

@@ -28,9 +28,9 @@
 #ifndef V8_PLATFORM_MUTEX_H_
 #define V8_PLATFORM_MUTEX_H_
 
-#include "lazy-instance.h"
+#include "../lazy-instance.h"
 #if V8_OS_WIN
-#include "win32-headers.h"
+#include "../win32-headers.h"
 #endif
 
 #if V8_OS_POSIX
@@ -81,10 +81,10 @@ class Mutex V8_FINAL {
   typedef CRITICAL_SECTION NativeHandle;
 #endif
 
-  NativeHandle& native_handle() V8_WARN_UNUSED_RESULT {
+  NativeHandle& native_handle() {
     return native_handle_;
   }
-  const NativeHandle& native_handle() const V8_WARN_UNUSED_RESULT {
+  const NativeHandle& native_handle() const {
     return native_handle_;
   }
 
@@ -94,14 +94,14 @@ class Mutex V8_FINAL {
   int level_;
 #endif
 
-  V8_INLINE(void AssertHeldAndUnmark()) {
+  V8_INLINE void AssertHeldAndUnmark() {
 #ifdef DEBUG
     ASSERT_EQ(1, level_);
     level_--;
 #endif
   }
 
-  V8_INLINE(void AssertUnheldAndMark()) {
+  V8_INLINE void AssertUnheldAndMark() {
 #ifdef DEBUG
     ASSERT_EQ(0, level_);
     level_++;
@@ -177,10 +177,10 @@ class RecursiveMutex V8_FINAL {
   // The implementation-defined native handle type.
   typedef Mutex::NativeHandle NativeHandle;
 
-  NativeHandle& native_handle() V8_WARN_UNUSED_RESULT {
+  NativeHandle& native_handle() {
     return native_handle_;
   }
-  const NativeHandle& native_handle() const V8_WARN_UNUSED_RESULT {
+  const NativeHandle& native_handle() const {
     return native_handle_;
   }
 
