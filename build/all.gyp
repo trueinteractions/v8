@@ -10,7 +10,7 @@
       'dependencies': [
         '../preparser/preparser.gyp:*',
         '../samples/samples.gyp:*',
-	'../tint/runtime.gyp:*',
+	'../tint/tint.gyp:*',
         '../src/d8.gyp:d8',
         '../test/cctest/cctest.gyp:*',
       ],
