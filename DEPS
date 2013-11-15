@@ -11,7 +11,7 @@ deps = {
     "https://src.chromium.org/chrome/trunk/deps/third_party/icu46@214189",
 
   "v8/third_party/libffi":
-    "https://github.com/atgreen/libffi/tree/v3.0.13"
+    "https://github.com/atgreen/libffi/trunk/"
 }
 
 deps_os = {
