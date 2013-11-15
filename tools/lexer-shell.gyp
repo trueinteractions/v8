@@ -25,21 +25,33 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-[
-[ALWAYS, {
-  ##############################################################################
-  # Flaky tests.
-  # BUG(v8:2989).
-  'dfg-inline-arguments-become-double': [PASS, FLAKY],
-  'dfg-inline-arguments-become-int32': [PASS, FLAKY],
-  'dfg-inline-arguments-reset': [PASS, FLAKY],
-  'dfg-inline-arguments-reset-changetype': [PASS, FLAKY],
-}],  # ALWAYS
-['mode == debug', {
-  # Too slow in debug mode.
-  'dfg-int-overflow-in-loop': [SKIP],
-  'dfg-double-vote-fuzz': [SKIP],
-  'reentrant-caching': [SKIP],
-  'sort-large-array': [SKIP],
-}],  # 'mode == debug'
-]
+{
+  'variables': {
+    'v8_code': 1,
+    'v8_enable_i18n_support%': 1,
+  },
+  'includes': ['../build/toolchain.gypi', '../build/features.gypi'],
+  'targets': [
+    {
+      'target_name': 'lexer-shell',
+      'type': 'executable',
+      'dependencies': [
+        '../tools/gyp/v8.gyp:v8',
+      ],
+      'conditions': [
+        ['v8_enable_i18n_support==1', {
+          'dependencies': [
+            '<(icu_gyp_path):icui18n',
+            '<(icu_gyp_path):icuuc',
+          ],
+        }],
+      ],
+      'include_dirs+': [
+        '../src',
+      ],
+      'sources': [
+        'lexer-shell.cc',
+      ],
+    },
+  ],
+}

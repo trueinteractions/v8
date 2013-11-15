@@ -176,14 +176,21 @@ static void InitializeArrayConstructorDescriptor(
   // rax -- number of arguments
   // rdi -- function
   // rbx -- type info cell with elements kind
-  static Register registers[] = { rdi, rbx };
-  descriptor->register_param_count_ = 2;
-  if (constant_stack_parameter_count != 0) {
+  static Register registers_variable_args[] = { rdi, rbx, rax };
+  static Register registers_no_args[] = { rdi, rbx };
+
+  if (constant_stack_parameter_count == 0) {
+    descriptor->register_param_count_ = 2;
+    descriptor->register_params_ = registers_no_args;
+  } else {
     // stack param count needs (constructor pointer, and single argument)
+    descriptor->handler_arguments_mode_ = PASS_ARGUMENTS;
     descriptor->stack_parameter_count_ = rax;
+    descriptor->register_param_count_ = 3;
+    descriptor->register_params_ = registers_variable_args;
   }
+
   descriptor->hint_stack_parameter_count_ = constant_stack_parameter_count;
-  descriptor->register_params_ = registers;
   descriptor->function_mode_ = JS_FUNCTION_STUB_MODE;
   descriptor->deoptimization_handler_ =
       Runtime::FunctionForId(Runtime::kArrayConstructor)->entry;
@@ -197,15 +204,21 @@ static void InitializeInternalArrayConstructorDescriptor(
   // register state
   // rax -- number of arguments
   // rdi -- constructor function
-  static Register registers[] = { rdi };
-  descriptor->register_param_count_ = 1;
+  static Register registers_variable_args[] = { rdi, rax };
+  static Register registers_no_args[] = { rdi };
 
-  if (constant_stack_parameter_count != 0) {
+  if (constant_stack_parameter_count == 0) {
+    descriptor->register_param_count_ = 1;
+    descriptor->register_params_ = registers_no_args;
+  } else {
     // stack param count needs (constructor pointer, and single argument)
+    descriptor->handler_arguments_mode_ = PASS_ARGUMENTS;
     descriptor->stack_parameter_count_ = rax;
+    descriptor->register_param_count_ = 2;
+    descriptor->register_params_ = registers_variable_args;
   }
+
   descriptor->hint_stack_parameter_count_ = constant_stack_parameter_count;
-  descriptor->register_params_ = registers;
   descriptor->function_mode_ = JS_FUNCTION_STUB_MODE;
   descriptor->deoptimization_handler_ =
       Runtime::FunctionForId(Runtime::kInternalArrayConstructor)->entry;
@@ -299,6 +312,17 @@ void ElementsTransitionAndStoreStub::InitializeInterfaceDescriptor(
   descriptor->register_params_ = registers;
   descriptor->deoptimization_handler_ =
       FUNCTION_ADDR(ElementsTransitionAndStoreIC_Miss);
+}
+
+
+void NewStringAddStub::InitializeInterfaceDescriptor(
+    Isolate* isolate,
+    CodeStubInterfaceDescriptor* descriptor) {
+  static Register registers[] = { rdx, rax };
+  descriptor->register_param_count_ = 2;
+  descriptor->register_params_ = registers;
+  descriptor->deoptimization_handler_ =
+      Runtime::FunctionForId(Runtime::kStringAdd)->entry;
 }
 
 
@@ -4200,15 +4224,9 @@ void SubStringStub::Generate(MacroAssembler* masm) {
     STATIC_ASSERT((kStringEncodingMask & kOneByteStringTag) != 0);
     STATIC_ASSERT((kStringEncodingMask & kTwoByteStringTag) == 0);
     __ testb(rbx, Immediate(kStringEncodingMask));
-    // Make long jumps when allocations tracking is on due to
-    // RecordObjectAllocation inside MacroAssembler::Allocate.
-    Label::Distance jump_distance =
-        masm->isolate()->heap_profiler()->is_tracking_allocations()
-        ? Label::kFar
-        : Label::kNear;
-    __ j(zero, &two_byte_slice, jump_distance);
+    __ j(zero, &two_byte_slice, Label::kNear);
     __ AllocateAsciiSlicedString(rax, rbx, r14, &runtime);
-    __ jmp(&set_slice_header, jump_distance);
+    __ jmp(&set_slice_header, Label::kNear);
     __ bind(&two_byte_slice);
     __ AllocateTwoByteSlicedString(rax, rbx, r14, &runtime);
     __ bind(&set_slice_header);
@@ -5569,10 +5587,12 @@ static void CreateArrayDispatchOneArgument(MacroAssembler* masm,
       __ Assert(equal, kExpectedAllocationSiteInCell);
     }
 
-    // Save the resulting elements kind in type info
-    __ Integer32ToSmi(rdx, rdx);
-    __ movq(FieldOperand(rcx, AllocationSite::kTransitionInfoOffset), rdx);
-    __ SmiToInteger32(rdx, rdx);
+    // Save the resulting elements kind in type info. We can't just store r3
+    // in the AllocationSite::transition_info field because elements kind is
+    // restricted to a portion of the field...upper bits need to be left alone.
+    STATIC_ASSERT(AllocationSite::ElementsKindBits::kShift == 0);
+    __ SmiAddConstant(FieldOperand(rcx, AllocationSite::kTransitionInfoOffset),
+                      Smi::FromInt(kFastElementsKindPackedToHoley));
 
     __ bind(&normal_sequence);
     int last_index = GetSequenceIndexFromFastElementsKind(
@@ -5714,8 +5734,11 @@ void ArrayConstructorStub::Generate(MacroAssembler* masm) {
          masm->isolate()->factory()->allocation_site_map());
   __ j(not_equal, &no_info);
 
+  // Only look at the lower 16 bits of the transition info.
   __ movq(rdx, FieldOperand(rdx, AllocationSite::kTransitionInfoOffset));
   __ SmiToInteger32(rdx, rdx);
+  STATIC_ASSERT(AllocationSite::ElementsKindBits::kShift == 0);
+  __ and_(rdx, Immediate(AllocationSite::ElementsKindBits::kMask));
   GenerateDispatchToArrayStub(masm, DONT_OVERRIDE);
 
   __ bind(&no_info);
