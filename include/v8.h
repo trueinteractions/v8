@@ -2661,6 +2661,8 @@ class V8_EXPORT ArrayBuffer : public Object {
    */
   Contents Externalize();
 
+  void* BaseAddress();
+
   V8_INLINE static ArrayBuffer* Cast(Value* obj);
 
   static const int kInternalFieldCount = V8_ARRAY_BUFFER_INTERNAL_FIELD_COUNT;
@@ -2697,6 +2699,10 @@ class V8_EXPORT ArrayBufferView : public Object {
    * Size of a view in bytes.
    */
   size_t ByteLength();
+  /**
+   * Base address of a view.
+   */
+  void* BaseAddress();
 
   V8_INLINE static ArrayBufferView* Cast(Value* obj);
 

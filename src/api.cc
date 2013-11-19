@@ -6001,6 +6001,13 @@ bool v8::ArrayBuffer::IsExternal() const {
   return Utils::OpenHandle(this)->is_external();
 }
 
+void* v8::ArrayBuffer::BaseAddress() {
+  i::Handle<i::JSArrayBuffer> obj = Utils::OpenHandle(this);
+  ApiCheck(obj->is_external(),
+           "v8::ArrayBuffer::Externalize",
+           "ArrayBuffer must be externalized");
+  return obj->backing_store();
+}
 
 v8::ArrayBuffer::Contents v8::ArrayBuffer::Externalize() {
   i::Handle<i::JSArrayBuffer> obj = Utils::OpenHandle(this);
@@ -6088,6 +6095,15 @@ size_t v8::ArrayBufferView::ByteOffset() {
 size_t v8::ArrayBufferView::ByteLength() {
   i::Handle<i::JSArrayBufferView> obj = Utils::OpenHandle(this);
   return static_cast<size_t>(obj->byte_length()->Number());
+}
+
+
+void* v8::ArrayBufferView::BaseAddress() {
+  i::Handle<i::JSArrayBufferView> obj = Utils::OpenHandle(this);
+  i::Handle<i::JSArrayBuffer> buffer(i::JSArrayBuffer::cast(obj->buffer()));
+  void* buffer_data = buffer->backing_store();
+  size_t byte_offset = static_cast<size_t>(obj->byte_offset()->Number());
+  return static_cast<uint8_t*>(buffer_data) + byte_offset;
 }
 
 
